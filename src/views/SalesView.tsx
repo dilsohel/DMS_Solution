@@ -1,23 +1,14 @@
 import React, { useState, useMemo } from 'react';
 import {
-  ShoppingCart,
-  Plus,
   Trash2,
   Printer,
   Search,
-  Filter,
-  Users,
   RotateCcw,
-  CheckCircle,
-  AlertCircle,
-  Calendar,
-  DollarSign,
-  FileText,
   UserPlus
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
-import { Customer, Product, Sale, SaleItem } from '../types';
+import { Product, Sale, SaleItem } from '../types';
 
 interface SalesViewProps {
   onViewInvoice: (sale: Sale) => void;
@@ -101,31 +92,31 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
       };
       setCartItems(updated);
     } else {
-      if (product.currentStock <= 0) {
-        alert('This product is out of stock!');
+      if (product.currentStock < 1) {
+        alert(`Product "${product.name}" is currently out of stock!`);
         return;
       }
       const newItem: SaleItem = {
         productId: product.id,
         productName: product.name,
         unit: product.unit,
-        purchasePrice: product.purchasePrice,
-        unitPrice: product.sellingPrice,
         quantity: 1,
-        subtotal: product.sellingPrice,
+        purchasePrice: product.purchasePrice || 0,
+        unitPrice: product.sellingPrice || 0,
+        subtotal: product.sellingPrice || 0,
       };
       setCartItems([...cartItems, newItem]);
     }
   };
 
   const handleUpdateCartQty = (productId: string, qty: number) => {
-    const prod = products.find((p) => p.id === productId);
     if (qty <= 0) {
       handleRemoveFromCart(productId);
       return;
     }
-    if (prod && qty > prod.currentStock) {
-      alert(`Stock limit reached! Available: ${prod.currentStock} ${prod.unit}`);
+    const product = products.find((p) => p.id === productId);
+    if (product && qty > product.currentStock) {
+      alert(`Available stock is only ${product.currentStock} ${product.unit}`);
       return;
     }
     setCartItems(
@@ -137,36 +128,26 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
     );
   };
 
-  const handleUpdateCartPrice = (productId: string, price: number) => {
-    setCartItems(
-      cartItems.map((it) =>
-        it.productId === productId
-          ? { ...it, unitPrice: price, subtotal: it.quantity * price }
-          : it
-      )
-    );
-  };
-
   const handleRemoveFromCart = (productId: string) => {
     setCartItems(cartItems.filter((it) => it.productId !== productId));
   };
 
   const handleSaveSale = async () => {
     if (cartItems.length === 0) {
-      alert('Please add at least one product to the invoice');
+      alert('Your invoice cart is empty! Please select at least one product.');
       return;
     }
 
     setSubmitting(true);
     try {
       const customer = customers.find((c) => c.id === selectedCustomerId);
-      const status: Sale['status'] =
-        dueAmount <= 0 ? 'paid' : paidAmount > 0 ? 'partial' : 'due';
+      const custName = customer?.name || 'Walk-in Customer';
+      const custPhone = customer?.phone || undefined;
 
-      const sale = await createSale({
-        customerId: customer?.id || '',
-        customerName: customer?.name || 'Walk-in Customer',
-        customerPhone: customer?.phone || undefined,
+      const createdSale = await createSale({
+        customerId: selectedCustomerId || 'walk_in',
+        customerName: custName,
+        customerPhone: custPhone,
         items: cartItems,
         subtotal,
         discount: discountAmount,
@@ -175,12 +156,12 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
         paidAmount,
         dueAmount,
         paymentMethod,
-        paymentAccountId: paidAmount > 0 ? paymentAccountId : undefined,
+        paymentAccountId,
         notes: invoiceNotes.trim() || undefined,
-        status,
+        status: dueAmount <= 0 ? 'paid' : paidAmount > 0 ? 'partial' : 'due',
       });
 
-      // Clear Form
+      // Clear form
       setCartItems([]);
       setDiscountAmount(0);
       setTaxPercent(0);
@@ -189,9 +170,12 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
       setSelectedCustomerId('');
 
       // Open print preview
-      onViewInvoice(sale);
+      if (createdSale) {
+        onViewInvoice(createdSale);
+      }
     } catch (err: any) {
-      alert(err.message || 'Error creating sale');
+      console.error('Error creating sale:', err);
+      alert('Failed to save sale: ' + (err.message || 'Please check your inputs'));
     } finally {
       setSubmitting(false);
     }
@@ -276,29 +260,29 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
       {/* Header & Tabs */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-white tracking-tight">Sales & POS Invoicing</h1>
-          <p className="text-xs text-slate-400">
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Sales & POS Invoicing</h1>
+          <p className="text-xs text-slate-500">
             Create invoices, record cash/credit sales, automatically decrement stock, and print receipts.
           </p>
         </div>
 
-        <div className="flex bg-slate-900 border border-slate-800 p-1 rounded-2xl text-xs">
+        <div className="flex bg-slate-100 border border-slate-200 p-1 rounded-2xl text-xs">
           <button
             onClick={() => setActiveTab('create')}
-            className={`px-4 py-2 rounded-xl font-bold transition-all ${
+            className={`px-4 py-2 rounded-xl font-bold transition-all cursor-pointer ${
               activeTab === 'create'
-                ? 'bg-emerald-600 text-white shadow-md'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-emerald-600 text-white shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             Create New Invoice
           </button>
           <button
             onClick={() => setActiveTab('history')}
-            className={`px-4 py-2 rounded-xl font-bold transition-all ${
+            className={`px-4 py-2 rounded-xl font-bold transition-all cursor-pointer ${
               activeTab === 'history'
-                ? 'bg-emerald-600 text-white shadow-md'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-emerald-600 text-white shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             Sales History ({sales.length})
@@ -310,10 +294,10 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
         /* POS & INVOICE CREATION INTERFACE */
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Left: Product Picker */}
-          <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4">
+          <div className="lg:col-span-7 bg-white border border-slate-200/90 rounded-3xl p-5 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="font-bold text-sm text-white">Select Products</h2>
-              <span className="text-xs text-slate-400">{products.length} products available</span>
+              <h2 className="font-bold text-sm text-slate-900">Select Products</h2>
+              <span className="text-xs text-slate-500">{products.length} products available</span>
             </div>
 
             {/* Product Quick Grid */}
@@ -326,19 +310,19 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                     onClick={() => !isOut && handleAddToCart(p)}
                     className={`p-3 rounded-2xl border transition-all text-left flex flex-col justify-between ${
                       isOut
-                        ? 'bg-slate-950/40 border-slate-900 opacity-50 cursor-not-allowed'
-                        : 'bg-slate-950 border-slate-800/80 hover:border-emerald-500/50 hover:bg-slate-800/30 cursor-pointer'
+                        ? 'bg-slate-50/50 border-slate-200 opacity-50 cursor-not-allowed'
+                        : 'bg-slate-50/80 border-slate-200 hover:border-emerald-500 hover:bg-sky-50/40 cursor-pointer shadow-2xs'
                     }`}
                   >
                     <div>
-                      <div className="font-bold text-xs text-white truncate">{p.name}</div>
-                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">{p.sku}</div>
+                      <div className="font-bold text-xs text-slate-900 truncate">{p.name}</div>
+                      <div className="text-[10px] text-slate-500 font-mono mt-0.5">{p.sku}</div>
                     </div>
-                    <div className="mt-3 flex items-center justify-between pt-2 border-t border-slate-800/60">
-                      <span className="text-xs font-bold text-emerald-400 font-mono">
+                    <div className="mt-3 flex items-center justify-between pt-2 border-t border-slate-200/80">
+                      <span className="text-xs font-bold text-emerald-700 font-mono">
                         {currency}{p.sellingPrice.toLocaleString()}
                       </span>
-                      <span className={`text-[10px] font-semibold ${isOut ? 'text-rose-400' : 'text-slate-400'}`}>
+                      <span className={`text-[10px] font-semibold ${isOut ? 'text-rose-600' : 'text-slate-500'}`}>
                         {p.currentStock} {p.unit}
                       </span>
                     </div>
@@ -349,10 +333,10 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
           </div>
 
           {/* Right: Cart & Billing Form */}
-          <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4">
-            <div className="flex justify-between items-center pb-3 border-b border-slate-800">
-              <h2 className="font-bold text-base text-white">Invoice Cart</h2>
-              <span className="text-xs font-mono text-emerald-400 font-bold">
+          <div className="lg:col-span-5 bg-white border border-slate-200/90 rounded-3xl p-5 shadow-xs space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-100">
+              <h2 className="font-bold text-base text-slate-900">Invoice Cart</h2>
+              <span className="text-xs font-mono text-emerald-700 font-bold">
                 Next: {currentBusiness?.invoicePrefix || 'DMS-'}{currentBusiness?.nextInvoiceNumber || 1001}
               </span>
             </div>
@@ -360,11 +344,11 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
             {/* Customer Selector */}
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="text-xs font-semibold text-slate-300">Customer</label>
+                <label className="text-xs font-semibold text-slate-700">Customer</label>
                 <button
                   type="button"
                   onClick={() => setIsCustomerModalOpen(true)}
-                  className="text-[11px] text-emerald-400 hover:text-emerald-300 font-semibold flex items-center space-x-1"
+                  className="text-[11px] text-emerald-700 hover:text-emerald-900 font-bold flex items-center space-x-1 cursor-pointer"
                 >
                   <UserPlus className="w-3 h-3" />
                   <span>+ New Customer</span>
@@ -373,7 +357,7 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
               <select
                 value={selectedCustomerId}
                 onChange={(e) => setSelectedCustomerId(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
               >
                 <option value="">Walk-in Customer (General)</option>
                 {customers.map((c) => (
@@ -394,11 +378,11 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                 cartItems.map((item) => (
                   <div
                     key={item.productId}
-                    className="p-2.5 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between text-xs"
+                    className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between text-xs"
                   >
                     <div className="flex-1 mr-2">
-                      <div className="font-semibold text-white truncate">{item.productName}</div>
-                      <div className="text-[11px] text-slate-400 font-mono">
+                      <div className="font-semibold text-slate-900 truncate">{item.productName}</div>
+                      <div className="text-[11px] text-slate-500 font-mono">
                         {currency}{item.unitPrice} / {item.unit}
                       </div>
                     </div>
@@ -409,14 +393,14 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                         min="1"
                         value={item.quantity}
                         onChange={(e) => handleUpdateCartQty(item.productId, parseInt(e.target.value) || 1)}
-                        className="w-14 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-center font-mono font-bold text-white text-xs"
+                        className="w-14 bg-white border border-slate-300 rounded-lg px-2 py-1 text-center font-mono font-bold text-slate-900 text-xs"
                       />
-                      <span className="font-mono font-bold text-emerald-400 w-16 text-right">
+                      <span className="font-mono font-bold text-emerald-700 w-16 text-right">
                         {currency}{item.subtotal.toLocaleString()}
                       </span>
                       <button
                         onClick={() => handleRemoveFromCart(item.productId)}
-                        className="text-slate-500 hover:text-rose-400 p-1"
+                        className="text-slate-400 hover:text-rose-600 p-1 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -427,55 +411,55 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
             </div>
 
             {/* Calculations & Discounts */}
-            <div className="border-t border-slate-800 pt-3 space-y-2 text-xs">
-              <div className="flex justify-between text-slate-400">
+            <div className="border-t border-slate-100 pt-3 space-y-2 text-xs">
+              <div className="flex justify-between text-slate-600">
                 <span>Subtotal:</span>
-                <span className="font-mono text-white font-semibold">
+                <span className="font-mono text-slate-900 font-bold">
                   {currency}{subtotal.toLocaleString()}
                 </span>
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="text-slate-400">Discount ({currency}):</span>
+                <span className="text-slate-600">Discount ({currency}):</span>
                 <input
                   type="number"
                   min="0"
                   value={discountAmount}
                   onChange={(e) => setDiscountAmount(parseFloat(e.target.value) || 0)}
-                  className="w-24 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-right font-mono text-white text-xs"
+                  className="w-24 bg-slate-50/70 border border-slate-200 rounded-lg px-2 py-1 text-right font-mono text-slate-900 text-xs focus:bg-white focus:border-sky-500"
                 />
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="text-slate-400">VAT / Tax (%):</span>
+                <span className="text-slate-600">VAT / Tax (%):</span>
                 <input
                   type="number"
                   min="0"
                   value={taxPercent}
                   onChange={(e) => setTaxPercent(parseFloat(e.target.value) || 0)}
-                  className="w-24 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-right font-mono text-white text-xs"
+                  className="w-24 bg-slate-50/70 border border-slate-200 rounded-lg px-2 py-1 text-right font-mono text-slate-900 text-xs focus:bg-white focus:border-sky-500"
                 />
               </div>
 
-              <div className="flex justify-between items-center text-sm font-bold text-white pt-2 border-t border-slate-800">
+              <div className="flex justify-between items-center text-sm font-bold text-slate-900 pt-2 border-t border-slate-100">
                 <span>Grand Total:</span>
-                <span className="font-mono text-emerald-400 text-base">
+                <span className="font-mono text-emerald-700 text-base font-black">
                   {currency}{grandTotal.toLocaleString()}
                 </span>
               </div>
             </div>
 
             {/* Payment Details */}
-            <div className="border-t border-slate-800 pt-3 space-y-3 text-xs">
+            <div className="border-t border-slate-100 pt-3 space-y-3 text-xs">
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                     Payment Method
                   </label>
                   <select
                     value={paymentMethod}
                     onChange={(e) => setPaymentMethod(e.target.value as any)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-white"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-900"
                   >
                     <option value="cash">Cash</option>
                     <option value="bank">Bank Transfer</option>
@@ -485,13 +469,13 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                     Deposit Account
                   </label>
                   <select
                     value={paymentAccountId}
                     onChange={(e) => setPaymentAccountId(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-white"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-900"
                   >
                     {accounts.map((a) => (
                       <option key={a.id} value={a.id}>
@@ -504,7 +488,7 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                     Paid Amount ({currency})
                   </label>
                   <input
@@ -512,20 +496,20 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                     min="0"
                     value={paidAmount}
                     onChange={(e) => setPaidAmount(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono font-bold focus:outline-none focus:bg-white focus:border-sky-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                     Due Amount ({currency})
                   </label>
                   <input
                     type="text"
                     disabled
                     value={`${currency}${dueAmount.toLocaleString()}`}
-                    className={`w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs font-mono font-bold ${
-                      dueAmount > 0 ? 'text-amber-400' : 'text-slate-400'
+                    className={`w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-mono font-bold ${
+                      dueAmount > 0 ? 'text-amber-700' : 'text-slate-500'
                     }`}
                   />
                 </div>
@@ -535,7 +519,7 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
               <button
                 type="button"
                 onClick={() => setPaidAmount(grandTotal)}
-                className="text-[11px] text-emerald-400 hover:underline block"
+                className="text-[11px] text-emerald-700 hover:underline font-semibold block cursor-pointer"
               >
                 Set full paid amount ({currency}{grandTotal.toLocaleString()})
               </button>
@@ -544,7 +528,7 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                 type="button"
                 disabled={submitting || cartItems.length === 0}
                 onClick={handleSaveSale}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold py-3 px-4 rounded-xl text-xs transition-all flex items-center justify-center space-x-2 shadow-lg shadow-emerald-950/50 disabled:opacity-50 mt-2"
+                className="w-full bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold py-3 px-4 rounded-xl text-xs transition-all flex items-center justify-center space-x-2 shadow-xs disabled:opacity-50 mt-2 cursor-pointer"
               >
                 <Printer className="w-4 h-4" />
                 <span>Complete Sale & Print Invoice</span>
@@ -555,47 +539,47 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
       ) : (
         /* SALES HISTORY TAB */
         <div className="space-y-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between shadow-xs">
             <div className="relative flex-1">
-              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
               <input
                 type="text"
                 value={historySearch}
                 onChange={(e) => setHistorySearch(e.target.value)}
                 placeholder="Search invoice number or customer..."
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                className="w-full bg-slate-50/70 border border-slate-200 rounded-xl pl-10 pr-4 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500"
               />
             </div>
 
-            <div className="flex bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs">
+            <div className="flex bg-slate-100 border border-slate-200 rounded-xl p-1 text-xs">
               <button
                 onClick={() => setStatusFilter('ALL')}
-                className={`px-3 py-1 rounded-lg font-medium transition-colors ${
-                  statusFilter === 'ALL' ? 'bg-slate-800 text-white' : 'text-slate-400'
+                className={`px-3 py-1 rounded-lg font-semibold transition-colors cursor-pointer ${
+                  statusFilter === 'ALL' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 All
               </button>
               <button
                 onClick={() => setStatusFilter('PAID')}
-                className={`px-3 py-1 rounded-lg font-medium transition-colors ${
-                  statusFilter === 'PAID' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-400'
+                className={`px-3 py-1 rounded-lg font-semibold transition-colors cursor-pointer ${
+                  statusFilter === 'PAID' ? 'bg-white text-emerald-800 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 Paid
               </button>
               <button
                 onClick={() => setStatusFilter('PARTIAL')}
-                className={`px-3 py-1 rounded-lg font-medium transition-colors ${
-                  statusFilter === 'PARTIAL' ? 'bg-amber-500/20 text-amber-400' : 'text-slate-400'
+                className={`px-3 py-1 rounded-lg font-semibold transition-colors cursor-pointer ${
+                  statusFilter === 'PARTIAL' ? 'bg-white text-amber-800 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 Partial
               </button>
               <button
                 onClick={() => setStatusFilter('DUE')}
-                className={`px-3 py-1 rounded-lg font-medium transition-colors ${
-                  statusFilter === 'DUE' ? 'bg-rose-500/20 text-rose-400' : 'text-slate-400'
+                className={`px-3 py-1 rounded-lg font-semibold transition-colors cursor-pointer ${
+                  statusFilter === 'DUE' ? 'bg-white text-rose-800 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 Due
@@ -603,7 +587,7 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
             </div>
           </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
+          <div className="bg-white border border-slate-200/90 rounded-3xl overflow-hidden shadow-xs">
             {filteredSales.length === 0 ? (
               <div className="text-center py-16 text-slate-500 text-xs">
                 No invoices found matching your filters.
@@ -612,7 +596,7 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800 bg-slate-950/50 text-slate-400 font-semibold uppercase text-[10px] tracking-wider">
+                    <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-semibold uppercase text-[10px] tracking-wider">
                       <th className="py-3 px-4">Invoice #</th>
                       <th className="py-3 px-3">Date</th>
                       <th className="py-3 px-3">Customer</th>
@@ -623,36 +607,36 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                       <th className="py-3 px-4 text-right">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-800/60">
+                  <tbody className="divide-y divide-slate-100">
                     {filteredSales.map((s) => (
-                      <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
-                        <td className="py-3 px-4 font-mono font-bold text-white">{s.invoiceNo}</td>
-                        <td className="py-3 px-3 text-slate-400">
+                      <tr key={s.id} className="hover:bg-sky-50/30 transition-colors">
+                        <td className="py-3 px-4 font-mono font-bold text-slate-900">{s.invoiceNo}</td>
+                        <td className="py-3 px-3 text-slate-500">
                           {new Date(s.createdAt).toLocaleDateString()}
                         </td>
-                        <td className="py-3 px-3 font-semibold text-slate-200">
+                        <td className="py-3 px-3 font-semibold text-slate-800">
                           {s.customerName}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono font-bold text-white">
+                        <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
                           {currency}{s.total.toLocaleString()}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono font-semibold text-emerald-400">
+                        <td className="py-3 px-3 text-right font-mono font-semibold text-emerald-700">
                           {currency}{s.paidAmount.toLocaleString()}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono font-bold text-amber-400">
+                        <td className="py-3 px-3 text-right font-mono font-bold text-amber-700">
                           {currency}{s.dueAmount.toLocaleString()}
                         </td>
                         <td className="py-3 px-3 text-center">
                           {s.dueAmount <= 0 ? (
-                            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded-full">
+                            <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold px-2 py-0.5 rounded-full">
                               Paid
                             </span>
                           ) : s.paidAmount > 0 ? (
-                            <span className="text-[10px] bg-amber-500/20 text-amber-400 font-bold px-2 py-0.5 rounded-full">
+                            <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-bold px-2 py-0.5 rounded-full">
                               Partial
                             </span>
                           ) : (
-                            <span className="text-[10px] bg-rose-500/20 text-rose-400 font-bold px-2 py-0.5 rounded-full">
+                            <span className="text-[10px] bg-rose-50 text-rose-700 border border-rose-200 font-bold px-2 py-0.5 rounded-full">
                               Due
                             </span>
                           )}
@@ -661,10 +645,10 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                           <div className="flex items-center justify-end space-x-1.5">
                             <button
                               onClick={() => onViewInvoice(s)}
-                              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors"
+                              className="p-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg transition-colors cursor-pointer"
                               title="Print / View Invoice"
                             >
-                              <Printer className="w-3.5 h-3.5 text-emerald-400" />
+                              <Printer className="w-3.5 h-3.5 text-emerald-600" />
                             </button>
                             <button
                               onClick={() => {
@@ -673,10 +657,10 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                                 s.items.forEach((it) => (initialQty[it.productId] = 0));
                                 setReturnQty(initialQty);
                               }}
-                              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors"
+                              className="p-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg transition-colors cursor-pointer"
                               title="Process Return / Refund"
                             >
-                              <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                              <RotateCcw className="w-3.5 h-3.5 text-amber-600" />
                             </button>
                           </div>
                         </td>
@@ -692,52 +676,52 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
 
       {/* Quick Add Customer Modal */}
       {isCustomerModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl">
-            <h3 className="font-bold text-base text-white mb-3">Add Customer Quickly</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-sm w-full p-6 shadow-2xl">
+            <h3 className="font-bold text-base text-slate-900 mb-3">Add Customer Quickly</h3>
             <form onSubmit={handleCreateCustomerQuick} className="space-y-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Name *</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Name *</label>
                 <input
                   type="text"
                   required
                   value={newCustName}
                   onChange={(e) => setNewCustName(e.target.value)}
                   placeholder="e.g. Rahim Mia"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Phone</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Phone</label>
                 <input
                   type="text"
                   value={newCustPhone}
                   onChange={(e) => setNewCustPhone(e.target.value)}
                   placeholder="017xxxxxxxx"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Address</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Address</label>
                 <input
                   type="text"
                   value={newCustAddress}
                   onChange={(e) => setNewCustAddress(e.target.value)}
                   placeholder="Market road, Shop 4"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
               <div className="pt-2 flex justify-end space-x-2">
                 <button
                   type="button"
                   onClick={() => setIsCustomerModalOpen(false)}
-                  className="px-3 py-1.5 text-xs text-slate-400 hover:text-white"
+                  className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-4 py-1.5 rounded-xl text-xs"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-1.5 rounded-xl text-xs cursor-pointer shadow-xs"
                 >
                   Save & Select
                 </button>
@@ -749,24 +733,24 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
 
       {/* Sales Return Modal */}
       {returnSale && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
-            <h3 className="font-bold text-base text-white mb-1">Process Sales Return</h3>
-            <p className="text-xs text-slate-400 mb-4">
-              Invoice #{returnSale.invoiceNo} • Customer: {returnSale.customerName}
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <h3 className="font-bold text-base text-slate-900 mb-1">Process Sales Return</h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Invoice #{returnSale.invoiceNo} · Customer: {returnSale.customerName}
             </p>
 
             <form onSubmit={handleReturnSubmit} className="space-y-4">
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Items to Return:</div>
+                <div className="text-xs font-semibold text-slate-700">Items to Return:</div>
                 {returnSale.items.map((it) => (
-                  <div key={it.productId} className="flex justify-between items-center text-xs p-2 bg-slate-950 rounded-xl border border-slate-800">
+                  <div key={it.productId} className="flex justify-between items-center text-xs p-2.5 bg-slate-50 rounded-xl border border-slate-200">
                     <div>
-                      <div className="font-bold text-white">{it.productName}</div>
-                      <div className="text-slate-400">Sold: {it.quantity} {it.unit} @ {currency}{it.unitPrice}</div>
+                      <div className="font-bold text-slate-900">{it.productName}</div>
+                      <div className="text-slate-500">Sold: {it.quantity} {it.unit} @ {currency}{it.unitPrice}</div>
                     </div>
                     <div className="flex items-center space-x-1">
-                      <span className="text-[11px] text-slate-400">Qty:</span>
+                      <span className="text-[11px] text-slate-500">Qty:</span>
                       <input
                         type="number"
                         min="0"
@@ -775,7 +759,7 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                         onChange={(e) =>
                           setReturnQty({ ...returnQty, [it.productId]: parseInt(e.target.value) || 0 })
                         }
-                        className="w-16 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-center font-bold text-white"
+                        className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1 text-center font-bold text-slate-900"
                       />
                     </div>
                   </div>
@@ -783,7 +767,7 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Reason for Return
                 </label>
                 <input
@@ -792,7 +776,7 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                   value={returnReason}
                   onChange={(e) => setReturnReason(e.target.value)}
                   placeholder="e.g. Expired, damaged, excess order"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
 
@@ -800,13 +784,13 @@ export const SalesView: React.FC<SalesViewProps> = ({ onViewInvoice }) => {
                 <button
                   type="button"
                   onClick={() => setReturnSale(null)}
-                  className="px-4 py-2 text-xs text-slate-400 hover:text-white"
+                  className="px-4 py-2 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-4 py-2 rounded-xl text-xs"
+                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-4 py-2 rounded-xl text-xs cursor-pointer shadow-xs"
                 >
                   Confirm Return & Adjust Stock
                 </button>

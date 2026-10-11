@@ -1,22 +1,15 @@
 import React, { useState } from 'react';
 import {
-  Building2,
-  Store,
-  DollarSign,
-  Phone,
-  Mail,
-  MapPin,
-  CheckCircle2,
   ArrowRight,
-  Shield,
   Sparkles,
-  HelpCircle,
   MessageCircle,
   Upload
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { uploadFileToStorage } from '../lib/firebase';
+import { BrandLogo } from '../components/BrandLogo';
 
 interface BusinessSetupWizardProps {
   onCancel?: () => void;
@@ -30,6 +23,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
   onOpenSupport,
 }) => {
   const { createNewBusiness, userProfile, user } = useAuth();
+  const toast = useToast();
 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -101,57 +95,74 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
 
       await createNewBusiness(newBusinessPayload);
 
+      toast.success(
+        `Business "${businessName.trim()}" profile saved and initialized successfully!`,
+        'Business Created'
+      );
+
       confetti({
-        particleCount: 80,
-        spread: 60,
+        particleCount: 100,
+        spread: 70,
         origin: { y: 0.6 },
       });
+
+      if (onCancel) {
+        onCancel();
+      }
     } catch (err: any) {
       console.error('Error creating business:', err);
-      setError(err.message || 'Failed to initialize business. Please try again.');
+      setError(err.message || 'Failed to initialize business. Please retry.');
+      toast.error(err.message || 'Failed to initialize business. Please retry.', 'Setup Error');
+    } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 sm:p-6 lg:p-10">
-      {/* Top Banner */}
-      <div className="max-w-2xl mx-auto w-full flex items-center justify-between pb-6 border-b border-slate-900">
-        <div className="flex items-center space-x-2">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center font-bold text-slate-950 text-sm">
-            DMS
+    <div className="min-h-screen bg-slate-50 text-slate-900 p-4 sm:p-6 flex flex-col justify-between selection:bg-emerald-500 selection:text-white">
+      {/* Top Header */}
+      <div className="max-w-2xl mx-auto w-full flex justify-between items-center pb-6 border-b border-slate-200">
+        <div className="flex items-center space-x-3">
+          <BrandLogo size="md" showText={false} />
+          <div>
+            <h1 className="font-extrabold text-lg text-slate-900 tracking-tight leading-none">
+              DMS Solution
+            </h1>
+            <p className="text-[10px] text-emerald-700 font-bold uppercase tracking-wider mt-0.5">
+              Business Setup Wizard
+            </p>
           </div>
-          <span className="font-extrabold text-white text-base">DMS Solution</span>
         </div>
+
         <button
           onClick={onOpenSupport}
-          className="text-emerald-400 hover:text-emerald-300 text-xs flex items-center space-x-1"
+          className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors cursor-pointer"
         >
-          <MessageCircle className="w-3.5 h-3.5" />
+          <MessageCircle className="w-3.5 h-3.5 text-emerald-600" />
           <span>Support: 01789637029</span>
         </button>
       </div>
 
       {/* Wizard Card */}
       <div className="max-w-2xl mx-auto w-full my-auto py-8">
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl relative overflow-hidden">
+        <div className="bg-white border border-slate-200/90 rounded-3xl p-6 sm:p-10 shadow-xl shadow-slate-200/40 relative overflow-hidden">
           {/* Progress Indicator */}
           <div className="mb-8">
-            <div className="flex items-center justify-between text-xs font-semibold text-slate-400 mb-2">
-              <span className={step >= 1 ? 'text-emerald-400' : ''}>1. Business Profile</span>
-              <span className={step >= 2 ? 'text-emerald-400' : ''}>2. Contact Details</span>
-              <span className={step >= 3 ? 'text-emerald-400' : ''}>3. Financial Preferences</span>
+            <div className="flex items-center justify-between text-xs font-semibold text-slate-500 mb-2">
+              <span className={step >= 1 ? 'text-emerald-700 font-bold' : ''}>1. Business Profile</span>
+              <span className={step >= 2 ? 'text-emerald-700 font-bold' : ''}>2. Contact Details</span>
+              <span className={step >= 3 ? 'text-emerald-700 font-bold' : ''}>3. Financial Preferences</span>
             </div>
-            <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+            <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-300"
+                className="h-full bg-gradient-to-r from-emerald-500 via-teal-500 to-sky-500 transition-all duration-300 rounded-full"
                 style={{ width: `${(step / 3) * 100}%` }}
               />
             </div>
           </div>
 
           {error && (
-            <div className="mb-6 p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl text-rose-300 text-xs">
+            <div className="mb-6 p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-medium">
               {error}
             </div>
           )}
@@ -160,15 +171,15 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
           {step === 1 && (
             <div className="space-y-5 animate-in fade-in duration-200">
               <div>
-                <h2 className="text-xl sm:text-2xl font-bold text-white">Let's set up your business</h2>
-                <p className="text-xs text-slate-400 mt-1">
+                <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">Let's set up your business</h2>
+                <p className="text-xs text-slate-600 mt-1">
                   Enter your business name and details to customize your invoices and accounts.
                 </p>
               </div>
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Business / Store Name *
                   </label>
                   <input
@@ -177,13 +188,13 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                     value={businessName}
                     onChange={(e) => setBusinessName(e.target.value)}
                     placeholder="e.g. Sohel Enterprise & Department Store"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                   />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       Owner Name
                     </label>
                     <input
@@ -191,18 +202,18 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                       value={ownerName}
                       onChange={(e) => setOwnerName(e.target.value)}
                       placeholder="e.g. DIL Mohammad Sohel"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       Business Type
                     </label>
                     <select
                       value={businessType}
                       onChange={(e) => setBusinessType(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                     >
                       <option value="Retailer & Shopkeeper">Retailer & Shopkeeper</option>
                       <option value="Wholesaler & Distributor">Wholesaler & Distributor</option>
@@ -217,7 +228,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Logo Image (Upload or URL - Optional)
                   </label>
                   <div className="flex items-center space-x-2">
@@ -226,10 +237,10 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                       value={logoUrl}
                       onChange={(e) => setLogoUrl(e.target.value)}
                       placeholder="https://... or upload from device"
-                      className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                      className="flex-1 bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                     />
-                    <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-700 shrink-0">
-                      <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                    <label className="cursor-pointer bg-slate-100 hover:bg-slate-200 text-slate-700 px-3.5 py-2.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors border border-slate-200 shrink-0">
+                      <Upload className="w-3.5 h-3.5 text-emerald-600" />
                       <span>{uploadingLogo ? 'Uploading...' : 'Upload'}</span>
                       <input
                         type="file"
@@ -245,9 +256,9 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                       <img
                         src={logoUrl}
                         alt="Logo Preview"
-                        className="w-8 h-8 rounded-lg object-contain bg-slate-950 border border-slate-800 p-0.5"
+                        className="w-8 h-8 rounded-lg object-contain bg-white border border-slate-200 p-0.5"
                       />
-                      <span className="text-[11px] text-emerald-400">
+                      <span className="text-[11px] text-emerald-700 font-medium">
                         Logo ready for business dashboard
                       </span>
                     </div>
@@ -260,7 +271,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                   <button
                     type="button"
                     onClick={onCancel}
-                    className="text-xs text-slate-400 hover:text-white"
+                    className="text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                   >
                     Cancel
                   </button>
@@ -268,7 +279,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                 <button
                   type="button"
                   onClick={handleNext}
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 px-6 rounded-xl text-xs flex items-center space-x-2 transition-all shadow-md"
+                  className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold py-2.5 px-6 rounded-xl text-xs flex items-center space-x-2 transition-all shadow-xs cursor-pointer"
                 >
                   <span>Continue</span>
                   <ArrowRight className="w-4 h-4" />
@@ -281,15 +292,15 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
           {step === 2 && (
             <div className="space-y-5 animate-in fade-in duration-200">
               <div>
-                <h2 className="text-xl sm:text-2xl font-bold text-white">Contact & Address</h2>
-                <p className="text-xs text-slate-400 mt-1">
+                <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">Contact & Address</h2>
+                <p className="text-xs text-slate-600 mt-1">
                   This info appears on invoices, receipts, and order confirmations.
                 </p>
               </div>
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Business Address
                   </label>
                   <input
@@ -297,13 +308,13 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
                     placeholder="e.g. Shop #12, Market Square, Dhaka"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                   />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       Phone Number
                     </label>
                     <input
@@ -311,11 +322,11 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
                       placeholder="e.g. 01789637029"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       WhatsApp Number
                     </label>
                     <input
@@ -323,13 +334,13 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                       value={whatsapp}
                       onChange={(e) => setWhatsapp(e.target.value)}
                       placeholder="e.g. 01789637029"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Official Business Email
                   </label>
                   <input
@@ -337,7 +348,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="e.g. contact@business.com"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                   />
                 </div>
               </div>
@@ -346,14 +357,14 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                 <button
                   type="button"
                   onClick={() => setStep(1)}
-                  className="text-xs text-slate-400 hover:text-white"
+                  className="text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Back
                 </button>
                 <button
                   type="button"
                   onClick={handleNext}
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 px-6 rounded-xl text-xs flex items-center space-x-2 transition-all shadow-md"
+                  className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold py-2.5 px-6 rounded-xl text-xs flex items-center space-x-2 transition-all shadow-xs cursor-pointer"
                 >
                   <span>Continue</span>
                   <ArrowRight className="w-4 h-4" />
@@ -366,8 +377,8 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
           {step === 3 && (
             <div className="space-y-5 animate-in fade-in duration-200">
               <div>
-                <h2 className="text-xl sm:text-2xl font-bold text-white">Finance & Invoicing Setup</h2>
-                <p className="text-xs text-slate-400 mt-1">
+                <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">Finance & Invoicing Setup</h2>
+                <p className="text-xs text-slate-600 mt-1">
                   Configure default currency, numbering prefix, and fiscal accounting year.
                 </p>
               </div>
@@ -375,7 +386,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
               <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       Currency Symbol
                     </label>
                     <select
@@ -384,7 +395,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                         setCurrency(e.target.value);
                         setCurrencyCode(e.target.value === '৳' ? 'BDT' : e.target.value === '$' ? 'USD' : 'EUR');
                       }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-emerald-500 font-bold"
+                      className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500 font-bold"
                     >
                       <option value="৳">৳ BDT (Bangladeshi Taka - Default)</option>
                       <option value="$">$ USD (US Dollar)</option>
@@ -395,7 +406,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       Invoice Prefix
                     </label>
                     <input
@@ -403,14 +414,14 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                       value={invoicePrefix}
                       onChange={(e) => setInvoicePrefix(e.target.value.toUpperCase())}
                       placeholder="DMS-"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 font-mono placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500 font-bold"
                     />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       Financial Year
                     </label>
                     <input
@@ -418,29 +429,29 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                       value={financialYear}
                       onChange={(e) => setFinancialYear(e.target.value)}
                       placeholder="2026-2027"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-50/60 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-sky-500"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       Starting Invoice Number
                     </label>
                     <input
                       type="text"
                       disabled
                       value="1001 (Auto-increment)"
-                      className="w-full bg-slate-950/60 border border-slate-800/60 rounded-xl px-4 py-2.5 text-xs text-slate-400 font-mono"
+                      className="w-full bg-slate-100 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-500 font-mono font-medium"
                     />
                   </div>
                 </div>
 
-                <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300">
-                  <div className="font-semibold flex items-center space-x-1.5 mb-1">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900">
+                  <div className="font-bold flex items-center space-x-1.5 mb-1 text-emerald-950">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
                     <span>Automatic Account Provisioning</span>
                   </div>
-                  <p className="text-[11px] text-emerald-400/90">
+                  <p className="text-[11px] text-emerald-800">
                     We will automatically configure <strong>Cash in Hand</strong>, <strong>Bank Account</strong>, and <strong>bKash MFS</strong> accounts so you can start selling immediately!
                   </p>
                 </div>
@@ -450,7 +461,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                 <button
                   type="button"
                   onClick={() => setStep(2)}
-                  className="text-xs text-slate-400 hover:text-white"
+                  className="text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Back
                 </button>
@@ -458,7 +469,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                   type="button"
                   disabled={loading}
                   onClick={handleFinish}
-                  className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold py-3 px-8 rounded-xl text-xs flex items-center space-x-2 transition-all shadow-lg shadow-emerald-950/60 disabled:opacity-50"
+                  className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 active:from-emerald-800 active:to-teal-800 text-white font-bold py-3 px-8 rounded-xl text-xs flex items-center space-x-2 transition-all shadow-md shadow-emerald-700/20 disabled:opacity-50 cursor-pointer"
                 >
                   {loading ? (
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -476,7 +487,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
       </div>
 
       {/* Footer */}
-      <div className="max-w-2xl mx-auto w-full text-center text-xs text-slate-500 pt-6 border-t border-slate-900">
+      <div className="max-w-2xl mx-auto w-full text-center text-xs text-slate-500 pt-6 border-t border-slate-200">
         DMS Solution SaaS • Owner: DIL Mohammad Sohel • WhatsApp Support: 01789637029
       </div>
     </div>

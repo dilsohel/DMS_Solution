@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { BusinessProvider } from './context/BusinessContext';
+import { ToastProvider } from './context/ToastContext';
 import { Navbar } from './components/Navbar';
 import { Sidebar } from './components/Sidebar';
 import { SupportBanner, SupportModal } from './components/SupportModal';
@@ -41,11 +42,13 @@ const MainAppContent: React.FC = () => {
   // Loading state
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white space-y-4">
-        <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center font-black text-slate-950 text-xl shadow-xl animate-pulse">
-          DMS
-        </div>
-        <div className="text-sm font-semibold tracking-wide text-slate-300">
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center text-slate-800 space-y-4">
+        <img
+          src="https://i.imgur.com/XjO7IJK.jpg"
+          alt="DMS Solution"
+          className="h-14 w-auto object-contain animate-pulse"
+        />
+        <div className="text-sm font-semibold tracking-wide text-slate-600">
           Loading DMS Solution...
         </div>
       </div>
@@ -77,7 +80,7 @@ const MainAppContent: React.FC = () => {
 
   return (
     <BusinessProvider>
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-emerald-500 selection:text-slate-950">
+      <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-emerald-500 selection:text-white">
         {/* Support Banner at Top */}
         <SupportBanner />
 
@@ -159,7 +162,7 @@ const MainAppContent: React.FC = () => {
 
         {/* Register Additional Business Modal */}
         {isRegisterBusinessModalOpen && (
-          <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 p-4">
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/50 backdrop-blur-xs p-4">
             <BusinessSetupWizard
               isFirstBusiness={false}
               onCancel={() => setIsRegisterBusinessModalOpen(false)}
@@ -174,8 +177,10 @@ const MainAppContent: React.FC = () => {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <MainAppContent />
-    </AuthProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <MainAppContent />
+      </AuthProvider>
+    </ToastProvider>
   );
 }

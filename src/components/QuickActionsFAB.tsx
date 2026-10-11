@@ -1,19 +1,17 @@
 import React, { useState } from 'react';
 import {
   Zap,
-  Plus,
   ShoppingCart,
   ShoppingBag,
   Receipt,
   UserPlus,
   PackagePlus,
   X,
-  CheckCircle2,
   Trash2,
-  Printer
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
+import { useToast } from '../context/ToastContext';
 import { Sale, PurchaseItem } from '../types';
 import { SaleEntryModal } from './SaleEntryModal';
 
@@ -24,12 +22,11 @@ interface QuickActionsFABProps {
 
 export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
   onViewInvoice,
-  onNavigate,
 }) => {
   const { currentBusiness, permissions } = useAuth();
+  const toast = useToast();
   const {
     products,
-    customers,
     suppliers,
     accounts,
     createPurchase,
@@ -142,9 +139,9 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
       setPurSupplierId('');
       setModalType(null);
       setIsOpen(false);
-      alert('Purchase recorded and stock updated!');
+      toast.success('Purchase bill recorded and inventory updated!', 'Purchase Saved');
     } catch (err: any) {
-      alert(err.message || 'Failed to record purchase');
+      toast.error(err.message || 'Failed to record purchase', 'Purchase Error');
     } finally {
       setPurSubmitting(false);
     }
@@ -154,7 +151,7 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
   const handleExecuteInstantExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     if (expAmount <= 0) {
-      alert('Enter a valid expense amount');
+      toast.warning('Please enter a valid expense amount greater than 0', 'Amount Required');
       return;
     }
 
@@ -174,9 +171,9 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
       setExpDescription('');
       setModalType(null);
       setIsOpen(false);
-      alert('Expense recorded successfully!');
+      toast.success(`Expense of ${currency}${Number(expAmount).toLocaleString()} recorded!`, 'Expense Saved');
     } catch (err: any) {
-      alert(err.message || 'Failed to record expense');
+      toast.error(err.message || 'Failed to record expense', 'Expense Error');
     } finally {
       setExpSubmitting(false);
     }
@@ -186,42 +183,50 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
   const handleExecuteQuickCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!custName.trim()) return;
-    await addCustomer({
-      name: custName.trim(),
-      phone: custPhone.trim() || 'N/A',
-      address: custAddress.trim() || undefined,
-      openingBalance: 0,
-    });
-    setCustName('');
-    setCustPhone('');
-    setCustAddress('');
-    setModalType(null);
-    setIsOpen(false);
-    alert('Customer added successfully!');
+    try {
+      await addCustomer({
+        name: custName.trim(),
+        phone: custPhone.trim() || 'N/A',
+        address: custAddress.trim() || undefined,
+        openingBalance: 0,
+      });
+      toast.success(`Customer "${custName.trim()}" added successfully!`, 'Customer Added');
+      setCustName('');
+      setCustPhone('');
+      setCustAddress('');
+      setModalType(null);
+      setIsOpen(false);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to add customer', 'Customer Error');
+    }
   };
 
   // Handler for Product
   const handleExecuteQuickProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!prodName.trim()) return;
-    await addProduct({
-      name: prodName.trim(),
-      sku: 'SKU-' + Math.floor(1000 + Math.random() * 9000),
-      category: prodCategory.trim() || 'General',
-      unit: 'pcs',
-      purchasePrice: Number(prodPurchasePrice),
-      sellingPrice: Number(prodSellingPrice),
-      currentStock: Number(prodStock),
-      openingStock: Number(prodStock),
-      minStockAlert: 5,
-    });
-    setProdName('');
-    setProdPurchasePrice(0);
-    setProdSellingPrice(0);
-    setProdStock(10);
-    setModalType(null);
-    setIsOpen(false);
-    alert('Product added to inventory!');
+    try {
+      await addProduct({
+        name: prodName.trim(),
+        sku: 'SKU-' + Math.floor(1000 + Math.random() * 9000),
+        category: prodCategory.trim() || 'General',
+        unit: 'pcs',
+        purchasePrice: Number(prodPurchasePrice),
+        sellingPrice: Number(prodSellingPrice),
+        currentStock: Number(prodStock),
+        openingStock: Number(prodStock),
+        minStockAlert: 5,
+      });
+      toast.success(`Product "${prodName.trim()}" added to inventory!`, 'Product Added');
+      setProdName('');
+      setProdPurchasePrice(0);
+      setProdSellingPrice(0);
+      setProdStock(10);
+      setModalType(null);
+      setIsOpen(false);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to add product', 'Product Error');
+    }
   };
 
   return (
@@ -237,12 +242,12 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                 onClick={() => {
                   setModalType('sale');
                 }}
-                className="flex items-center space-x-2.5 bg-slate-900 hover:bg-slate-800 text-slate-100 px-4 py-2.5 rounded-2xl border border-slate-700/80 shadow-2xl transition-all group hover:border-emerald-500/50 cursor-pointer"
+                className="flex items-center space-x-2.5 bg-white hover:bg-slate-50 text-slate-800 px-4 py-2.5 rounded-2xl border border-slate-200/90 shadow-xl transition-all group hover:border-emerald-500 cursor-pointer"
               >
-                <span className="text-xs font-bold text-emerald-400 group-hover:text-emerald-300">
+                <span className="text-xs font-bold text-emerald-700 group-hover:text-emerald-800">
                   Instant Sale / POS
                 </span>
-                <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold border border-emerald-100">
                   <ShoppingCart className="w-4 h-4" />
                 </div>
               </button>
@@ -258,12 +263,12 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                   setPurAccountId(accounts[0]?.id || '');
                   setModalType('purchase');
                 }}
-                className="flex items-center space-x-2.5 bg-slate-900 hover:bg-slate-800 text-slate-100 px-4 py-2.5 rounded-2xl border border-slate-700/80 shadow-2xl transition-all group hover:border-cyan-500/50"
+                className="flex items-center space-x-2.5 bg-white hover:bg-slate-50 text-slate-800 px-4 py-2.5 rounded-2xl border border-slate-200/90 shadow-xl transition-all group hover:border-sky-500 cursor-pointer"
               >
-                <span className="text-xs font-bold text-cyan-400 group-hover:text-cyan-300">
+                <span className="text-xs font-bold text-sky-700 group-hover:text-sky-800">
                   Instant Purchase Bill
                 </span>
-                <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold">
+                <div className="w-8 h-8 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center font-bold border border-sky-100">
                   <ShoppingBag className="w-4 h-4" />
                 </div>
               </button>
@@ -278,12 +283,12 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                   setExpAccountId(accounts[0]?.id || '');
                   setModalType('expense');
                 }}
-                className="flex items-center space-x-2.5 bg-slate-900 hover:bg-slate-800 text-slate-100 px-4 py-2.5 rounded-2xl border border-slate-700/80 shadow-2xl transition-all group hover:border-amber-500/50"
+                className="flex items-center space-x-2.5 bg-white hover:bg-slate-50 text-slate-800 px-4 py-2.5 rounded-2xl border border-slate-200/90 shadow-xl transition-all group hover:border-amber-500 cursor-pointer"
               >
-                <span className="text-xs font-bold text-amber-400 group-hover:text-amber-300">
+                <span className="text-xs font-bold text-amber-700 group-hover:text-amber-800">
                   Instant Expense
                 </span>
-                <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
+                <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold border border-amber-100">
                   <Receipt className="w-4 h-4" />
                 </div>
               </button>
@@ -299,12 +304,12 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                   setProdStock(10);
                   setModalType('product');
                 }}
-                className="flex items-center space-x-2.5 bg-slate-900 hover:bg-slate-800 text-slate-100 px-4 py-2.5 rounded-2xl border border-slate-700/80 shadow-2xl transition-all group hover:border-indigo-500/50"
+                className="flex items-center space-x-2.5 bg-white hover:bg-slate-50 text-slate-800 px-4 py-2.5 rounded-2xl border border-slate-200/90 shadow-xl transition-all group hover:border-teal-500 cursor-pointer"
               >
-                <span className="text-xs font-bold text-indigo-400 group-hover:text-indigo-300">
+                <span className="text-xs font-bold text-teal-700 group-hover:text-teal-800">
                   Quick Add Product
                 </span>
-                <div className="w-8 h-8 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold">
+                <div className="w-8 h-8 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center font-bold border border-teal-100">
                   <PackagePlus className="w-4 h-4" />
                 </div>
               </button>
@@ -318,12 +323,12 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                 setCustAddress('');
                 setModalType('customer');
               }}
-              className="flex items-center space-x-2.5 bg-slate-900 hover:bg-slate-800 text-slate-100 px-4 py-2.5 rounded-2xl border border-slate-700/80 shadow-2xl transition-all group hover:border-purple-500/50"
+              className="flex items-center space-x-2.5 bg-white hover:bg-slate-50 text-slate-800 px-4 py-2.5 rounded-2xl border border-slate-200/90 shadow-xl transition-all group hover:border-sky-500 cursor-pointer"
             >
-              <span className="text-xs font-bold text-purple-400 group-hover:text-purple-300">
+              <span className="text-xs font-bold text-sky-700 group-hover:text-sky-800">
                 Quick Add Customer
               </span>
-              <div className="w-8 h-8 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold">
+              <div className="w-8 h-8 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center font-bold border border-sky-100">
                 <UserPlus className="w-4 h-4" />
               </div>
             </button>
@@ -333,16 +338,16 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
         {/* Main Floating Trigger Button */}
         <button
           onClick={() => setIsOpen(!isOpen)}
-          className={`flex items-center space-x-2 px-5 py-3.5 rounded-2xl font-black text-xs text-white shadow-2xl transition-all duration-300 transform active:scale-95 cursor-pointer ${
+          className={`flex items-center space-x-2 px-5 py-3.5 rounded-2xl font-black text-xs text-white shadow-xl transition-all duration-300 transform active:scale-95 cursor-pointer ${
             isOpen
-              ? 'bg-slate-800 border border-slate-700 rotate-0 shadow-slate-950/80'
-              : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-950/80 ring-4 ring-emerald-500/30'
+              ? 'bg-slate-800 border border-slate-700 shadow-slate-900/30'
+              : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-emerald-700/30 ring-4 ring-emerald-500/20'
           }`}
           title="Quick Actions Menu"
         >
           {isOpen ? (
             <>
-              <X className="w-5 h-5 text-slate-300" />
+              <X className="w-5 h-5 text-slate-200" />
               <span>Close Menu</span>
             </>
           ) : (
@@ -354,9 +359,7 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
         </button>
       </div>
 
-      {/* ========================================================================= */}
-      {/* 1. REUSABLE SALE ENTRY MODAL (With atomic Firestore transaction)         */}
-      {/* ========================================================================= */}
+      {/* 1. REUSABLE SALE ENTRY MODAL */}
       <SaleEntryModal
         isOpen={modalType === 'sale'}
         onClose={() => setModalType(null)}
@@ -369,23 +372,21 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
         }}
       />
 
-      {/* ========================================================================= */}
       {/* 2. INSTANT PURCHASE MODAL */}
-      {/* ========================================================================= */}
       {modalType === 'purchase' && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl my-8 relative">
-            <div className="flex justify-between items-center pb-3 border-b border-slate-800 mb-4">
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl my-8 relative">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-200 mb-4">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center font-bold border border-sky-100">
                   <ShoppingBag className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-base text-white">Instant Purchase Bill</h3>
-                  <p className="text-[11px] text-slate-400">Record inventory restocking directly</p>
+                  <h3 className="font-bold text-base text-slate-900">Instant Purchase Bill</h3>
+                  <p className="text-[11px] text-slate-500">Record inventory restocking directly</p>
                 </div>
               </div>
-              <button onClick={() => setModalType(null)} className="text-slate-400 hover:text-white p-1">
+              <button onClick={() => setModalType(null)} className="text-slate-400 hover:text-slate-700 p-1 cursor-pointer">
                 ✕
               </button>
             </div>
@@ -393,14 +394,14 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
             <form onSubmit={handleExecuteInstantPurchase} className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Select Supplier *
                   </label>
                   <select
                     required
                     value={purSupplierId}
                     onChange={(e) => setPurSupplierId(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                   >
                     <option value="">Select Supplier...</option>
                     {suppliers.map((s) => (
@@ -412,7 +413,7 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Add Product to Restock
                   </label>
                   <select
@@ -422,7 +423,7 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                         e.target.value = '';
                       }
                     }}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-cyan-400 font-medium"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-sky-700 font-medium focus:outline-none focus:bg-white focus:border-sky-500"
                   >
                     <option value="">+ Choose product to restock...</option>
                     {products.map((p) => (
@@ -435,10 +436,10 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
               </div>
 
               {/* Items */}
-              <div className="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
-                <div className="text-xs font-semibold text-slate-300 flex justify-between">
+              <div className="p-3 bg-slate-50/70 rounded-2xl border border-slate-200 space-y-2">
+                <div className="text-xs font-semibold text-slate-700 flex justify-between">
                   <span>Items to Restock ({purItems.length})</span>
-                  <span className="text-slate-400">Total Cost</span>
+                  <span className="text-slate-500">Total Cost</span>
                 </div>
 
                 {purItems.length === 0 ? (
@@ -450,11 +451,11 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                     {purItems.map((it) => (
                       <div
                         key={it.productId}
-                        className="flex items-center justify-between text-xs p-2 bg-slate-900 rounded-xl"
+                        className="flex items-center justify-between text-xs p-2.5 bg-white border border-slate-200/80 rounded-xl"
                       >
                         <div className="flex-1 mr-2">
-                          <div className="font-semibold text-white truncate">{it.productName}</div>
-                          <div className="text-[10px] text-slate-400">{it.unit}</div>
+                          <div className="font-semibold text-slate-900 truncate">{it.productName}</div>
+                          <div className="text-[10px] text-slate-500">{it.unit}</div>
                         </div>
                         <div className="flex items-center space-x-2">
                           <input
@@ -471,7 +472,7 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                                 )
                               );
                             }}
-                            className="w-12 bg-slate-950 border border-slate-700 rounded-lg px-2 py-0.5 text-center font-bold text-white text-xs"
+                            className="w-12 bg-slate-50 border border-slate-200 rounded-lg px-2 py-0.5 text-center font-bold text-slate-900 text-xs"
                           />
                           <input
                             type="number"
@@ -487,12 +488,12 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                                 )
                               );
                             }}
-                            className="w-16 bg-slate-950 border border-slate-700 rounded-lg px-2 py-0.5 text-right font-mono text-cyan-400 text-xs"
+                            className="w-16 bg-slate-50 border border-slate-200 rounded-lg px-2 py-0.5 text-right font-mono text-sky-700 font-bold text-xs"
                           />
                           <button
                             type="button"
                             onClick={() => setPurItems(purItems.filter((x) => x.productId !== it.productId))}
-                            className="text-slate-500 hover:text-rose-400 p-0.5"
+                            className="text-slate-400 hover:text-rose-500 p-0.5 cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -502,20 +503,20 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                   </div>
                 )}
 
-                <div className="pt-2 border-t border-slate-800 flex justify-between items-center text-xs font-bold text-white">
+                <div className="pt-2 border-t border-slate-200 flex justify-between items-center text-xs font-bold text-slate-900">
                   <span>Grand Total:</span>
-                  <span className="font-mono text-cyan-400 text-base">{currency}{purTotal.toLocaleString()}</span>
+                  <span className="font-mono text-sky-700 text-base">{currency}{purTotal.toLocaleString()}</span>
                 </div>
               </div>
 
               {/* Payments */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Payment Method</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Payment Method</label>
                   <select
                     value={purMethod}
                     onChange={(e) => setPurMethod(e.target.value as any)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-white"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-900 focus:bg-white focus:border-sky-500"
                   >
                     <option value="cash">Cash</option>
                     <option value="bank">Bank Transfer</option>
@@ -525,31 +526,31 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Paid Amount ({currency})</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Paid Amount ({currency})</label>
                   <input
                     type="number"
                     min="0"
                     value={purPaid}
                     onChange={(e) => setPurPaid(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono font-bold"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono font-bold focus:bg-white focus:border-sky-500"
                   />
                   <button
                     type="button"
                     onClick={() => setPurPaid(purTotal)}
-                    className="text-[10px] text-cyan-400 hover:underline mt-0.5 block"
+                    className="text-[10px] text-sky-700 hover:underline mt-0.5 block font-semibold cursor-pointer"
                   >
                     Full Paid
                   </button>
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Payable Due ({currency})</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Payable Due ({currency})</label>
                   <input
                     type="text"
                     disabled
                     value={`${currency}${purDue.toLocaleString()}`}
-                    className={`w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs font-mono font-bold ${
-                      purDue > 0 ? 'text-rose-400' : 'text-slate-400'
+                    className={`w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-mono font-bold ${
+                      purDue > 0 ? 'text-rose-600' : 'text-slate-500'
                     }`}
                   />
                 </div>
@@ -559,14 +560,14 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                 <button
                   type="button"
                   onClick={() => setModalType(null)}
-                  className="px-4 py-2 text-xs text-slate-400 hover:text-white"
+                  className="px-4 py-2 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={purSubmitting || purItems.length === 0 || !purSupplierId}
-                  className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold px-6 py-2 rounded-xl text-xs shadow-md disabled:opacity-50"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-6 py-2 rounded-xl text-xs shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {purSubmitting ? 'Saving...' : 'Confirm Purchase Bill'}
                 </button>
@@ -576,36 +577,34 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
         </div>
       )}
 
-      {/* ========================================================================= */}
       {/* 3. INSTANT EXPENSE MODAL */}
-      {/* ========================================================================= */}
       {modalType === 'expense' && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
-            <div className="flex justify-between items-center pb-3 border-b border-slate-800 mb-4">
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-200 mb-4">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold border border-amber-100">
                   <Receipt className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-base text-white">Instant Expense</h3>
-                  <p className="text-[11px] text-slate-400">Quickly record shop overhead costs</p>
+                  <h3 className="font-bold text-base text-slate-900">Instant Expense</h3>
+                  <p className="text-[11px] text-slate-500">Quickly record shop overhead costs</p>
                 </div>
               </div>
-              <button onClick={() => setModalType(null)} className="text-slate-400 hover:text-white p-1">
+              <button onClick={() => setModalType(null)} className="text-slate-400 hover:text-slate-700 p-1 cursor-pointer">
                 ✕
               </button>
             </div>
 
             <form onSubmit={handleExecuteInstantExpense} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Expense Category *
                 </label>
                 <select
                   value={expCategory}
                   onChange={(e) => setExpCategory(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-amber-500"
                 >
                   <option value="Rent & Utilities">Rent & Utilities</option>
                   <option value="Employee Salaries">Employee Salaries</option>
@@ -619,7 +618,7 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Amount ({currency}) *
                 </label>
                 <input
@@ -628,18 +627,18 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                   required
                   value={expAmount}
                   onChange={(e) => setExpAmount(parseFloat(e.target.value) || 0)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:border-amber-500"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 font-mono font-bold focus:outline-none focus:bg-white focus:border-amber-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Paid From Account *
                 </label>
                 <select
                   value={expAccountId}
                   onChange={(e) => setExpAccountId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-amber-500"
                 >
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
@@ -650,7 +649,7 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Short Description
                 </label>
                 <input
@@ -658,7 +657,7 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                   value={expDescription}
                   onChange={(e) => setExpDescription(e.target.value)}
                   placeholder="e.g. Guest hospitality, electricity token"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-amber-500"
                 />
               </div>
 
@@ -666,14 +665,14 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                 <button
                   type="button"
                   onClick={() => setModalType(null)}
-                  className="px-4 py-2 text-xs text-slate-400 hover:text-white"
+                  className="px-4 py-2 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={expSubmitting || expAmount <= 0}
-                  className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-6 py-2 rounded-xl text-xs shadow-md disabled:opacity-50"
+                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-6 py-2 rounded-xl text-xs shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {expSubmitting ? 'Recording...' : 'Record Expense'}
                 </button>
@@ -683,56 +682,54 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
         </div>
       )}
 
-      {/* ========================================================================= */}
       {/* 4. INSTANT CUSTOMER MODAL */}
-      {/* ========================================================================= */}
       {modalType === 'customer' && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl">
-            <h3 className="font-bold text-base text-white mb-3">Quick Add Customer</h3>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-sm w-full p-6 shadow-2xl">
+            <h3 className="font-bold text-base text-slate-900 mb-3">Quick Add Customer</h3>
             <form onSubmit={handleExecuteQuickCustomer} className="space-y-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Name *</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Name *</label>
                 <input
                   type="text"
                   required
                   value={custName}
                   onChange={(e) => setCustName(e.target.value)}
                   placeholder="Mohammad Karim"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Phone</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Phone</label>
                 <input
                   type="text"
                   value={custPhone}
                   onChange={(e) => setCustPhone(e.target.value)}
                   placeholder="017xxxxxxxx"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Address</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Address</label>
                 <input
                   type="text"
                   value={custAddress}
                   onChange={(e) => setCustAddress(e.target.value)}
                   placeholder="Area / Market"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
               <div className="pt-2 flex justify-end space-x-2">
                 <button
                   type="button"
                   onClick={() => setModalType(null)}
-                  className="px-3 py-1.5 text-xs text-slate-400 hover:text-white"
+                  className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-4 py-1.5 rounded-xl text-xs"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-1.5 rounded-xl text-xs cursor-pointer shadow-xs"
                 >
                   Add Customer
                 </button>
@@ -742,70 +739,68 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
         </div>
       )}
 
-      {/* ========================================================================= */}
       {/* 5. INSTANT PRODUCT MODAL */}
-      {/* ========================================================================= */}
       {modalType === 'product' && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl">
-            <h3 className="font-bold text-base text-white mb-3">Quick Add Product Item</h3>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-sm w-full p-6 shadow-2xl">
+            <h3 className="font-bold text-base text-slate-900 mb-3">Quick Add Product Item</h3>
             <form onSubmit={handleExecuteQuickProduct} className="space-y-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Product Name *</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Product Name *</label>
                 <input
                   type="text"
                   required
                   value={prodName}
                   onChange={(e) => setProdName(e.target.value)}
                   placeholder="e.g. Energy Drink 250ml"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-teal-500"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">Purchase Price</label>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Purchase Price</label>
                   <input
                     type="number"
                     min="0"
                     required
                     value={prodPurchasePrice}
                     onChange={(e) => setProdPurchasePrice(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-white font-mono"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:bg-white focus:border-teal-500"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">Selling Price</label>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Selling Price</label>
                   <input
                     type="number"
                     min="0"
                     required
                     value={prodSellingPrice}
                     onChange={(e) => setProdSellingPrice(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-white font-mono"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:bg-white focus:border-teal-500"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">Initial Stock</label>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Initial Stock</label>
                   <input
                     type="number"
                     min="0"
                     value={prodStock}
                     onChange={(e) => setProdStock(parseInt(e.target.value) || 0)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-white font-mono"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:bg-white focus:border-teal-500"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">Category</label>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Category</label>
                   <input
                     type="text"
                     value={prodCategory}
                     onChange={(e) => setProdCategory(e.target.value)}
                     placeholder="General"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-white"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-teal-500"
                   />
                 </div>
               </div>
@@ -814,13 +809,13 @@ export const QuickActionsFAB: React.FC<QuickActionsFABProps> = ({
                 <button
                   type="button"
                   onClick={() => setModalType(null)}
-                  className="px-3 py-1.5 text-xs text-slate-400 hover:text-white"
+                  className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-1.5 rounded-xl text-xs"
+                  className="bg-teal-600 hover:bg-teal-700 text-white font-bold px-4 py-1.5 rounded-xl text-xs cursor-pointer shadow-xs"
                 >
                   Create Product
                 </button>

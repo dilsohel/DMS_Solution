@@ -1,15 +1,11 @@
 import React, { useState } from 'react';
 import {
-  Landmark,
   Plus,
   ArrowRightLeft,
   DollarSign,
   Smartphone,
   Wallet,
-  Building,
-  CheckCircle,
-  TrendingUp,
-  AlertCircle
+  Building
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
@@ -89,8 +85,8 @@ export const AccountsView: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-white tracking-tight">Accounts & Finance</h1>
-          <p className="text-xs text-slate-400">
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Accounts & Finance</h1>
+          <p className="text-xs text-slate-500">
             Cashbooks, bank books, mobile wallets (bKash/Nagad), and fund transfers.
           </p>
         </div>
@@ -105,15 +101,15 @@ export const AccountsView: React.FC = () => {
                   setTransferError(null);
                   setIsTransferModalOpen(true);
                 }}
-                className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-all"
+                className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer"
               >
-                <ArrowRightLeft className="w-4 h-4 text-emerald-400" />
+                <ArrowRightLeft className="w-4 h-4 text-emerald-600" />
                 <span>Transfer Funds</span>
               </button>
 
               <button
                 onClick={() => setIsAddAccountModalOpen(true)}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-4 py-2 rounded-xl text-xs flex items-center space-x-2 shadow-lg shadow-emerald-950/40 transition-all"
+                className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold px-4 py-2 rounded-xl text-xs flex items-center space-x-2 shadow-xs transition-all cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
                 <span>Add Account</span>
@@ -125,50 +121,50 @@ export const AccountsView: React.FC = () => {
 
       {/* Liquidity Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 flex items-center justify-between shadow-xs">
           <div>
-            <div className="text-xs text-slate-400 font-medium">Total Liquid Assets</div>
-            <div className="text-2xl font-black text-white mt-0.5 font-mono">
+            <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Total Liquid Assets</div>
+            <div className="text-2xl font-black text-slate-900 mt-0.5 font-mono">
               {currency}{totalLiquidity.toLocaleString()}
             </div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center border border-emerald-100">
             <DollarSign className="w-5 h-5" />
           </div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 flex items-center justify-between shadow-xs">
           <div>
-            <div className="text-xs text-slate-400 font-medium">Cash in Hand</div>
-            <div className="text-2xl font-black text-emerald-400 mt-0.5 font-mono">
+            <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Cash in Hand</div>
+            <div className="text-2xl font-black text-emerald-700 mt-0.5 font-mono">
               {currency}{totalCash.toLocaleString()}
             </div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center border border-emerald-100">
             <Wallet className="w-5 h-5" />
           </div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 flex items-center justify-between shadow-xs">
           <div>
-            <div className="text-xs text-slate-400 font-medium">Bank Accounts</div>
-            <div className="text-2xl font-black text-cyan-400 mt-0.5 font-mono">
+            <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Bank Accounts</div>
+            <div className="text-2xl font-black text-sky-700 mt-0.5 font-mono">
               {currency}{totalBank.toLocaleString()}
             </div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center border border-sky-100">
             <Building className="w-5 h-5" />
           </div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 flex items-center justify-between shadow-xs">
           <div>
-            <div className="text-xs text-slate-400 font-medium">MFS (bKash/Nagad)</div>
-            <div className="text-2xl font-black text-amber-400 mt-0.5 font-mono">
+            <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider">MFS (bKash/Nagad)</div>
+            <div className="text-2xl font-black text-amber-700 mt-0.5 font-mono">
               {currency}{totalMfs.toLocaleString()}
             </div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center border border-amber-100">
             <Smartphone className="w-5 h-5" />
           </div>
         </div>
@@ -179,12 +175,11 @@ export const AccountsView: React.FC = () => {
         {accounts.map((acc) => {
           const isCash = acc.type === 'cash';
           const isBank = acc.type === 'bank';
-          const isMfs = acc.type === 'mfs';
 
           return (
             <div
               key={acc.id}
-              className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl flex flex-col justify-between hover:border-slate-700 transition-all"
+              className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs flex flex-col justify-between hover:border-slate-300 transition-all"
             >
               <div>
                 <div className="flex justify-between items-start">
@@ -192,10 +187,10 @@ export const AccountsView: React.FC = () => {
                     <div
                       className={`w-10 h-10 rounded-2xl flex items-center justify-center font-bold ${
                         isCash
-                          ? 'bg-emerald-500/10 text-emerald-400'
+                          ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
                           : isBank
-                          ? 'bg-cyan-500/10 text-cyan-400'
-                          : 'bg-amber-500/10 text-amber-400'
+                          ? 'bg-sky-50 text-sky-600 border border-sky-100'
+                          : 'bg-amber-50 text-amber-600 border border-amber-100'
                       }`}
                     >
                       {isCash ? (
@@ -207,35 +202,35 @@ export const AccountsView: React.FC = () => {
                       )}
                     </div>
                     <div>
-                      <h3 className="font-bold text-white text-base leading-tight">{acc.name}</h3>
-                      <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">
+                      <h3 className="font-bold text-slate-900 text-base leading-tight">{acc.name}</h3>
+                      <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">
                         {acc.type === 'mfs' ? 'Mobile Financial Service' : acc.type}
                       </span>
                     </div>
                   </div>
                   {acc.isDefault && (
-                    <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded-full">
+                    <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold px-2 py-0.5 rounded-full">
                       Default
                     </span>
                   )}
                 </div>
 
-                <div className="mt-6 pt-4 border-t border-slate-800/80">
-                  <div className="text-xs text-slate-400">Available Balance</div>
-                  <div className="text-2xl font-black text-white font-mono mt-1">
+                <div className="mt-6 pt-4 border-t border-slate-100">
+                  <div className="text-xs text-slate-500">Available Balance</div>
+                  <div className="text-2xl font-black text-slate-900 font-mono mt-1">
                     {currency}{acc.balance.toLocaleString()}
                   </div>
                 </div>
 
-                <div className="mt-4 space-y-1 text-xs text-slate-400">
-                  {acc.bankName && <div>Bank: <strong className="text-slate-300">{acc.bankName}</strong></div>}
+                <div className="mt-4 space-y-1 text-xs text-slate-500">
+                  {acc.bankName && <div>Bank: <strong className="text-slate-800">{acc.bankName}</strong></div>}
                   {acc.accountNumber && (
-                    <div className="font-mono">Account / Wallet #: <span className="text-slate-300">{acc.accountNumber}</span></div>
+                    <div className="font-mono">Account / Wallet #: <span className="text-slate-800">{acc.accountNumber}</span></div>
                   )}
                 </div>
               </div>
 
-              <div className="mt-6 pt-3 border-t border-slate-800 flex justify-between items-center text-xs">
+              <div className="mt-6 pt-3 border-t border-slate-100 flex justify-between items-center text-xs">
                 <span className="text-[11px] text-slate-500">Active</span>
                 <button
                   onClick={() => {
@@ -244,7 +239,7 @@ export const AccountsView: React.FC = () => {
                     setTransferError(null);
                     setIsTransferModalOpen(true);
                   }}
-                  className="text-emerald-400 hover:text-emerald-300 font-semibold"
+                  className="text-emerald-700 hover:text-emerald-900 font-bold cursor-pointer"
                 >
                   Transfer from here →
                 </button>
@@ -256,13 +251,13 @@ export const AccountsView: React.FC = () => {
 
       {/* Add Account Modal */}
       {isAddAccountModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
-            <h3 className="font-bold text-base text-white mb-4">Add Financial Account</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <h3 className="font-bold text-base text-slate-900 mb-4">Add Financial Account</h3>
 
             <form onSubmit={handleCreateAccount} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Account Name *
                 </label>
                 <input
@@ -271,18 +266,18 @@ export const AccountsView: React.FC = () => {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. BRAC Bank Corporate / bKash Agent"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Account Type
                 </label>
                 <select
                   value={type}
                   onChange={(e) => setType(e.target.value as any)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 >
                   <option value="cash">Cash (Counter Cash in Hand)</option>
                   <option value="bank">Bank Account</option>
@@ -292,7 +287,7 @@ export const AccountsView: React.FC = () => {
 
               {type === 'bank' && (
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Bank Name
                   </label>
                   <input
@@ -300,13 +295,13 @@ export const AccountsView: React.FC = () => {
                     value={bankName}
                     onChange={(e) => setBankName(e.target.value)}
                     placeholder="e.g. Islami Bank Bangladesh / City Bank"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white"
+                    className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900"
                   />
                 </div>
               )}
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Account / Mobile Number
                 </label>
                 <input
@@ -314,19 +309,19 @@ export const AccountsView: React.FC = () => {
                   value={accountNumber}
                   onChange={(e) => setAccountNumber(e.target.value)}
                   placeholder="e.g. 20501234567 or 01789637029"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Initial / Opening Balance ({currency})
                 </label>
                 <input
                   type="number"
                   value={balance}
                   onChange={(e) => setBalance(parseFloat(e.target.value) || 0)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 font-mono"
                 />
               </div>
 
@@ -334,13 +329,13 @@ export const AccountsView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsAddAccountModalOpen(false)}
-                  className="px-4 py-2 text-xs text-slate-400 hover:text-white"
+                  className="px-4 py-2 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-5 py-2 rounded-xl text-xs"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-5 py-2 rounded-xl text-xs cursor-pointer shadow-xs"
                 >
                   Create Account
                 </button>
@@ -352,28 +347,28 @@ export const AccountsView: React.FC = () => {
 
       {/* Transfer Funds Modal */}
       {isTransferModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
-            <h3 className="font-bold text-base text-white mb-1">Account Fund Transfer</h3>
-            <p className="text-xs text-slate-400 mb-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <h3 className="font-bold text-base text-slate-900 mb-1">Account Fund Transfer</h3>
+            <p className="text-xs text-slate-500 mb-4">
               Transfer funds between internal cash, bank, or MFS accounts.
             </p>
 
             {transferError && (
-              <div className="mb-3 p-2.5 bg-rose-500/20 text-rose-300 text-xs rounded-xl border border-rose-500/30">
+              <div className="mb-3 p-2.5 bg-rose-50 text-rose-700 text-xs rounded-xl border border-rose-200 font-medium">
                 {transferError}
               </div>
             )}
 
             <form onSubmit={handleTransferSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   From Source Account *
                 </label>
                 <select
                   value={fromAccountId}
                   onChange={(e) => setFromAccountId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 >
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
@@ -384,13 +379,13 @@ export const AccountsView: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   To Destination Account *
                 </label>
                 <select
                   value={toAccountId}
                   onChange={(e) => setToAccountId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 >
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
@@ -401,7 +396,7 @@ export const AccountsView: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Transfer Amount ({currency}) *
                 </label>
                 <input
@@ -410,12 +405,12 @@ export const AccountsView: React.FC = () => {
                   required
                   value={transferAmount}
                   onChange={(e) => setTransferAmount(parseFloat(e.target.value) || 0)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 font-mono font-bold focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Transfer Purpose / Notes
                 </label>
                 <input
@@ -423,7 +418,7 @@ export const AccountsView: React.FC = () => {
                   value={transferNotes}
                   onChange={(e) => setTransferNotes(e.target.value)}
                   placeholder="e.g. Deposited cash to bank, cash withdrawal"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-50/70 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:bg-white focus:border-sky-500"
                 />
               </div>
 
@@ -431,13 +426,13 @@ export const AccountsView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsTransferModalOpen(false)}
-                  className="px-4 py-2 text-xs text-slate-400 hover:text-white"
+                  className="px-4 py-2 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-5 py-2 rounded-xl text-xs"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-5 py-2 rounded-xl text-xs cursor-pointer shadow-xs"
                 >
                   Execute Transfer
                 </button>
