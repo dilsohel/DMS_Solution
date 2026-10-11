@@ -22,7 +22,7 @@ import {
   getDocs, 
   updateDoc 
 } from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType, testConnection, sanitizeForFirestore } from '../lib/firebase';
+import { auth, db, handleFirestoreError, OperationType, testConnection, sanitizeForFirestore, ensureFirebaseInitialized, isFirebaseReady } from '../lib/firebase';
 import { Business, UserProfile, UserRole } from '../types';
 
 interface AuthContextType {
@@ -106,12 +106,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentRole, setCurrentRole] = useState<UserRole>('owner');
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Initialize browser persistence
+  // Initialize browser persistence after ensuring Firebase is ready
   useEffect(() => {
-    testConnection();
-    setPersistence(auth, browserLocalPersistence).catch((err) => {
-      console.warn('Failed to set auth persistence:', err);
-    });
+    let isMounted = true;
+    ensureFirebaseInitialized()
+      .then(() => {
+        if (!isMounted) return;
+        testConnection();
+        if (auth && typeof setPersistence === 'function') {
+          setPersistence(auth, browserLocalPersistence).catch((err) => {
+            console.warn('Failed to set auth persistence:', err);
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('Firebase readiness check error:', err);
+      });
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const fetchBusinessesForUser = async (currentUser: User) => {
@@ -178,42 +192,91 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     }
 
-    await fetchBusinessesForUser(currentUser);
+    try {
+      await fetchBusinessesForUser(currentUser);
+    } catch (err) {
+      console.warn('Could not fetch businesses on init:', err);
+    }
   };
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        setUser(firebaseUser);
-        await initUserProfileAndBusinesses(firebaseUser);
-        setLoading(false);
-      } else {
-        // Check if there is an active direct login session
-        const storedDirect = localStorage.getItem('dms_direct_user');
-        if (storedDirect) {
-          try {
-            const parsed = JSON.parse(storedDirect);
-            const direct = createDirectUser(parsed.email, parsed.displayName, parsed.uid);
-            setUser(direct);
-            await initUserProfileAndBusinesses(direct);
-          } catch (e) {
-            console.warn('Failed to restore direct session:', e);
-            setUser(null);
-            setUserProfile(null);
-            setBusinesses([]);
-            setCurrentBusiness(null);
-          }
-        } else {
-          setUser(null);
-          setUserProfile(null);
-          setBusinesses([]);
-          setCurrentBusiness(null);
-        }
+    let isMounted = true;
+    let unsubscribe = () => {};
+
+    // Failsafe timeout: ensure app never hangs indefinitely on loading screen
+    const safetyTimeout = setTimeout(() => {
+      if (isMounted) {
         setLoading(false);
       }
-    });
+    }, 4000);
 
-    return () => unsubscribe();
+    const initAuthListener = async () => {
+      try {
+        await ensureFirebaseInitialized();
+      } catch (err) {
+        console.warn('Firebase init notice before auth:', err);
+      }
+
+      if (!auth || typeof onAuthStateChanged !== 'function') {
+        if (isMounted) setLoading(false);
+        return;
+      }
+
+      try {
+        unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+          if (!isMounted) return;
+          try {
+            if (firebaseUser) {
+              setUser(firebaseUser);
+              await initUserProfileAndBusinesses(firebaseUser);
+            } else {
+              // Check if there is an active direct login session
+              const storedDirect = localStorage.getItem('dms_direct_user');
+              if (storedDirect) {
+                try {
+                  const parsed = JSON.parse(storedDirect);
+                  const direct = createDirectUser(parsed.email, parsed.displayName, parsed.uid);
+                  setUser(direct);
+                  await initUserProfileAndBusinesses(direct);
+                } catch (e) {
+                  console.warn('Failed to restore direct session:', e);
+                  setUser(null);
+                  setUserProfile(null);
+                  setBusinesses([]);
+                  setCurrentBusiness(null);
+                }
+              } else {
+                setUser(null);
+                setUserProfile(null);
+                setBusinesses([]);
+                setCurrentBusiness(null);
+              }
+            }
+          } catch (handlerErr) {
+            console.error('Error during auth state change handler:', handlerErr);
+          } finally {
+            if (isMounted) {
+              setLoading(false);
+              clearTimeout(safetyTimeout);
+            }
+          }
+        });
+      } catch (subErr) {
+        console.error('Error setting onAuthStateChanged listener:', subErr);
+        if (isMounted) {
+          setLoading(false);
+          clearTimeout(safetyTimeout);
+        }
+      }
+    };
+
+    initAuthListener();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(safetyTimeout);
+      unsubscribe();
+    };
   }, []);
 
   const switchBusiness = (businessId: string) => {
