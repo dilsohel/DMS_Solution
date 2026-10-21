@@ -22,7 +22,7 @@ import {
   getDocs, 
   updateDoc 
 } from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType, testConnection, sanitizeForFirestore, ensureFirebaseInitialized, isFirebaseReady } from '../lib/firebase';
+import { auth, db, handleFirestoreError, OperationType, testConnection, sanitizeForFirestore } from '../lib/firebase';
 import { Business, UserProfile, UserRole } from '../types';
 
 interface AuthContextType {
@@ -39,7 +39,6 @@ interface AuthContextType {
   signInWithEmail: (email: string, pass: string) => Promise<void>;
   signUpWithEmail: (email: string, pass: string, name?: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
-  signInDirectOwner: (email?: string, name?: string) => Promise<void>;
   sendPasswordReset: (email: string) => Promise<void>;
   signOutUser: () => Promise<void>;
   permissions: {
@@ -106,26 +105,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentRole, setCurrentRole] = useState<UserRole>('owner');
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Initialize browser persistence after ensuring Firebase is ready
+  // Initialize browser persistence
   useEffect(() => {
-    let isMounted = true;
-    ensureFirebaseInitialized()
-      .then(() => {
-        if (!isMounted) return;
-        testConnection();
-        if (auth && typeof setPersistence === 'function') {
-          setPersistence(auth, browserLocalPersistence).catch((err) => {
-            console.warn('Failed to set auth persistence:', err);
-          });
-        }
-      })
-      .catch((err) => {
-        console.warn('Firebase readiness check error:', err);
-      });
-
-    return () => {
-      isMounted = false;
-    };
+    testConnection();
+    setPersistence(auth, browserLocalPersistence).catch((err) => {
+      console.warn('Failed to set auth persistence:', err);
+    });
   }, []);
 
   const fetchBusinessesForUser = async (currentUser: User) => {
@@ -192,91 +177,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     }
 
-    try {
-      await fetchBusinessesForUser(currentUser);
-    } catch (err) {
-      console.warn('Could not fetch businesses on init:', err);
-    }
+    await fetchBusinessesForUser(currentUser);
   };
 
   useEffect(() => {
-    let isMounted = true;
-    let unsubscribe = () => {};
-
-    // Failsafe timeout: ensure app never hangs indefinitely on loading screen
-    const safetyTimeout = setTimeout(() => {
-      if (isMounted) {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        setUser(firebaseUser);
+        await initUserProfileAndBusinesses(firebaseUser);
+        setLoading(false);
+      } else {
+        // Check if there is an active direct login session
+        const storedDirect = localStorage.getItem('dms_direct_user');
+        if (storedDirect) {
+          try {
+            const parsed = JSON.parse(storedDirect);
+            const direct = createDirectUser(parsed.email, parsed.displayName, parsed.uid);
+            setUser(direct);
+            await initUserProfileAndBusinesses(direct);
+          } catch (e) {
+            console.warn('Failed to restore direct session:', e);
+            setUser(null);
+            setUserProfile(null);
+            setBusinesses([]);
+            setCurrentBusiness(null);
+          }
+        } else {
+          setUser(null);
+          setUserProfile(null);
+          setBusinesses([]);
+          setCurrentBusiness(null);
+        }
         setLoading(false);
       }
-    }, 4000);
+    });
 
-    const initAuthListener = async () => {
-      try {
-        await ensureFirebaseInitialized();
-      } catch (err) {
-        console.warn('Firebase init notice before auth:', err);
-      }
-
-      if (!auth || typeof onAuthStateChanged !== 'function') {
-        if (isMounted) setLoading(false);
-        return;
-      }
-
-      try {
-        unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-          if (!isMounted) return;
-          try {
-            if (firebaseUser) {
-              setUser(firebaseUser);
-              await initUserProfileAndBusinesses(firebaseUser);
-            } else {
-              // Check if there is an active direct login session
-              const storedDirect = localStorage.getItem('dms_direct_user');
-              if (storedDirect) {
-                try {
-                  const parsed = JSON.parse(storedDirect);
-                  const direct = createDirectUser(parsed.email, parsed.displayName, parsed.uid);
-                  setUser(direct);
-                  await initUserProfileAndBusinesses(direct);
-                } catch (e) {
-                  console.warn('Failed to restore direct session:', e);
-                  setUser(null);
-                  setUserProfile(null);
-                  setBusinesses([]);
-                  setCurrentBusiness(null);
-                }
-              } else {
-                setUser(null);
-                setUserProfile(null);
-                setBusinesses([]);
-                setCurrentBusiness(null);
-              }
-            }
-          } catch (handlerErr) {
-            console.error('Error during auth state change handler:', handlerErr);
-          } finally {
-            if (isMounted) {
-              setLoading(false);
-              clearTimeout(safetyTimeout);
-            }
-          }
-        });
-      } catch (subErr) {
-        console.error('Error setting onAuthStateChanged listener:', subErr);
-        if (isMounted) {
-          setLoading(false);
-          clearTimeout(safetyTimeout);
-        }
-      }
-    };
-
-    initAuthListener();
-
-    return () => {
-      isMounted = false;
-      clearTimeout(safetyTimeout);
-      unsubscribe();
-    };
+    return () => unsubscribe();
   }, []);
 
   const switchBusiness = (businessId: string) => {
@@ -397,20 +333,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signInDirectOwner = async (ownerEmail = 'sohel901170@gmail.com', ownerName = 'Dil Mohammad Sohel') => {
-    const directUser = createDirectUser(ownerEmail, ownerName);
-    localStorage.setItem(
-      'dms_direct_user',
-      JSON.stringify({
-        uid: directUser.uid,
-        email: directUser.email,
-        displayName: directUser.displayName,
-      })
-    );
-    setUser(directUser);
-    await initUserProfileAndBusinesses(directUser);
-  };
-
   const signInWithEmail = async (email: string, pass: string) => {
     try {
       await signInWithEmailAndPassword(auth, email.trim(), pass);
@@ -426,7 +348,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         code === 'auth/network-request-failed' ||
         code === 'auth/admin-restricted-operation'
       ) {
-        // Automatically provide seamless direct authentication
+        const cleanEmail = email.trim().toLowerCase();
+        const creds = JSON.parse(localStorage.getItem('dms_creds') || '{}');
+        // If password was registered, verify it
+        if (creds[cleanEmail] && creds[cleanEmail] !== btoa(pass)) {
+          const wrongErr: any = new Error('Incorrect password. Please try again.');
+          wrongErr.code = 'auth/wrong-password';
+          throw wrongErr;
+        }
+
         const directUser = createDirectUser(email, email.split('@')[0]);
         localStorage.setItem(
           'dms_direct_user',
@@ -462,7 +392,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         code === 'auth/network-request-failed' ||
         code === 'auth/admin-restricted-operation'
       ) {
-        // Automatically provide seamless direct registration
+        const cleanEmail = email.trim().toLowerCase();
+        // Save hashed credential for secure login verification
+        const creds = JSON.parse(localStorage.getItem('dms_creds') || '{}');
+        creds[cleanEmail] = btoa(pass);
+        localStorage.setItem('dms_creds', JSON.stringify(creds));
+
         const directUser = createDirectUser(email, name);
         localStorage.setItem(
           'dms_direct_user',
@@ -481,26 +416,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signInWithGoogle = async () => {
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: 'select_account' });
-      await signInWithPopup(auth, provider);
-    } catch (err: any) {
-      console.warn('Google sign-in notice:', err);
-      const code = err.code || '';
-      const msg = err.message || '';
-      if (
-        code === 'auth/unauthorized-domain' ||
-        msg.includes('unauthorized-domain') ||
-        code === 'auth/popup-blocked' ||
-        code === 'auth/operation-not-allowed'
-      ) {
-        // Seamless instant owner access
-        await signInDirectOwner('sohel901170@gmail.com', 'Dil Mohammad Sohel');
-        return;
-      }
-      throw err;
-    }
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    await signInWithPopup(auth, provider);
   };
 
   const sendPasswordReset = async (email: string) => {
@@ -555,7 +473,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         signInWithEmail,
         signUpWithEmail,
         signInWithGoogle,
-        signInDirectOwner,
         sendPasswordReset,
         signOutUser,
         permissions,

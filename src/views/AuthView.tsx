@@ -11,9 +11,7 @@ import {
   Eye,
   EyeOff,
   ExternalLink,
-  KeyRound,
-  Zap,
-  Sparkles
+  KeyRound
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { BrandLogo, DMS_BG_URL, DMS_BG_FALLBACK } from '../components/BrandLogo';
@@ -24,7 +22,7 @@ interface AuthViewProps {
 }
 
 export const AuthView: React.FC<AuthViewProps> = ({ onOpenSupport }) => {
-  const { signInWithEmail, signUpWithEmail, signInWithGoogle, signInDirectOwner, sendPasswordReset } = useAuth();
+  const { signInWithEmail, signUpWithEmail, signInWithGoogle, sendPasswordReset } = useAuth();
 
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
@@ -296,31 +294,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ onOpenSupport }) => {
                   </button>
                 </div>
 
-                {/* Instant 1-Click Owner Access Button */}
-                <div className="mb-4 p-3 bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 border border-emerald-200/90 rounded-2xl shadow-xs">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[11px] font-bold text-emerald-900 flex items-center space-x-1.5">
-                      <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Instant Direct Access (No Configuration Required)</span>
-                    </span>
-                    <span className="text-[10px] bg-emerald-600 text-white font-bold px-1.5 py-0.5 rounded uppercase">
-                      Instant
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => signInDirectOwner('sohel901170@gmail.com', 'Dil Mohammad Sohel')}
-                    disabled={loading}
-                    className="w-full bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition-all flex items-center justify-center space-x-2 shadow-xs hover:shadow-md active:scale-[0.99] cursor-pointer"
-                  >
-                    <Zap className="w-4 h-4 text-emerald-200" />
-                    <span>Enter as Owner: Dil Mohammad Sohel</span>
-                  </button>
-                  <p className="text-[10px] text-slate-500 text-center mt-1.5">
-                    One-click direct login into DMS Solution Dashboard
-                  </p>
-                </div>
-
                 {/* Recommended 1-Click Google Sign-in Button */}
                 <div className="mb-4">
                   <button
@@ -366,18 +339,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ onOpenSupport }) => {
                     <div className="flex items-start space-x-2.5">
                       <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
                       <div className="flex-1 font-medium">{errorMessage}</div>
-                    </div>
-
-                    {/* Instant Direct Access Rescue Button */}
-                    <div className="pt-2 border-t border-rose-200">
-                      <button
-                        type="button"
-                        onClick={() => signInDirectOwner('sohel901170@gmail.com', 'Dil Mohammad Sohel')}
-                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-3 rounded-xl text-xs flex items-center justify-center space-x-2 transition-colors cursor-pointer"
-                      >
-                        <Zap className="w-3.5 h-3.5" />
-                        <span>Bypass & Enter as Owner Instantly</span>
-                      </button>
                     </div>
 
                     {/* Scenario A: Firebase Email/Password Disabled */}
