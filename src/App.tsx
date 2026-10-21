@@ -25,6 +25,9 @@ import { ReportsView } from './views/ReportsView';
 import { MembersView } from './views/MembersView';
 import { AuditLogsView } from './views/AuditLogsView';
 import { SettingsView } from './views/SettingsView';
+import { AICopilotView } from './views/AICopilotView';
+import { GeminiChatbot } from './components/GeminiChatbot';
+import { Sparkles, Bot, X } from 'lucide-react';
 import { Purchase, Sale } from './types';
 
 const MainAppContent: React.FC = () => {
@@ -34,6 +37,7 @@ const MainAppContent: React.FC = () => {
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isRegisterBusinessModalOpen, setIsRegisterBusinessModalOpen] = useState(false);
+  const [isFloatingChatOpen, setIsFloatingChatOpen] = useState(false);
 
   // Invoice Print Preview Modal State
   const [activePrintSale, setActivePrintSale] = useState<Sale | null>(null);
@@ -134,6 +138,7 @@ const MainAppContent: React.FC = () => {
 
             {currentView === 'products' && <ProductsView />}
             {currentView === 'customers' && <CustomersView />}
+            {currentView === 'ai-copilot' && <AICopilotView />}
             {currentView === 'suppliers' && <SuppliersView />}
             {currentView === 'accounts' && <AccountsView />}
             {currentView === 'expenses' && <ExpensesView />}
@@ -144,6 +149,27 @@ const MainAppContent: React.FC = () => {
               <SettingsView onOpenSupport={() => setIsSupportOpen(true)} />
             )}
           </main>
+        </div>
+
+        {/* Floating AI Business Copilot Launcher & Window */}
+        <div className="fixed bottom-5 right-5 z-40 flex flex-col items-end">
+          {isFloatingChatOpen ? (
+            <div className="mb-3 animate-in fade-in slide-in-from-bottom-4 duration-200">
+              <GeminiChatbot isFloating={true} onClose={() => setIsFloatingChatOpen(false)} />
+            </div>
+          ) : (
+            <button
+              onClick={() => setIsFloatingChatOpen(true)}
+              className="bg-gradient-to-r from-emerald-600 via-teal-600 to-sky-700 hover:from-emerald-700 hover:to-sky-800 text-white px-4 py-3 rounded-full font-bold shadow-xl shadow-emerald-950/20 flex items-center space-x-2.5 transition-all hover:scale-105 active:scale-95 cursor-pointer border border-white/20"
+              title="Open Gemini AI Copilot"
+            >
+              <div className="relative">
+                <Sparkles className="w-5 h-5 text-emerald-200 animate-pulse" />
+                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-300" />
+              </div>
+              <span className="text-xs tracking-wide">Ask AI Copilot</span>
+            </button>
+          )}
         </div>
 
         {/* Modals */}

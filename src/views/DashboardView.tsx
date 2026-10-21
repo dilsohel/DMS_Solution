@@ -28,6 +28,8 @@ import { useBusiness } from '../context/BusinessContext';
 import { Sale } from '../types';
 import { QuickActionsFAB } from '../components/QuickActionsFAB';
 import { SaleEntryModal } from '../components/SaleEntryModal';
+import { RecentActivitySummary } from '../components/RecentActivitySummary';
+import { WeeklySalesTrendChart } from '../components/WeeklySalesTrendChart';
 
 // Register ChartJS elements
 ChartJS.register(
@@ -190,6 +192,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onView
         </div>
       </div>
 
+      {/* Quick Summary of Recent Activity Component */}
+      <RecentActivitySummary
+        sales={sales}
+        purchases={purchases}
+        products={products}
+        expenses={expenses}
+        currency={currency}
+        onNavigate={onNavigate}
+        onViewInvoice={onViewInvoice}
+      />
+
       {/* Primary KPI Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Total Sales Card */}
@@ -327,6 +340,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onView
           </span>
         </div>
       </div>
+
+      {/* Weekly Sales Trends (Recharts) */}
+      <WeeklySalesTrendChart sales={sales} currency={currency} />
 
       {/* Charts Section */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

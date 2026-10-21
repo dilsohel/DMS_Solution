@@ -181,38 +181,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
+    let isMounted = true;
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        setUser(firebaseUser);
-        await initUserProfileAndBusinesses(firebaseUser);
-        setLoading(false);
-      } else {
-        // Check if there is an active direct login session
-        const storedDirect = localStorage.getItem('dms_direct_user');
-        if (storedDirect) {
-          try {
-            const parsed = JSON.parse(storedDirect);
-            const direct = createDirectUser(parsed.email, parsed.displayName, parsed.uid);
-            setUser(direct);
-            await initUserProfileAndBusinesses(direct);
-          } catch (e) {
-            console.warn('Failed to restore direct session:', e);
-            setUser(null);
-            setUserProfile(null);
-            setBusinesses([]);
-            setCurrentBusiness(null);
-          }
+      try {
+        if (firebaseUser) {
+          if (isMounted) setUser(firebaseUser);
+          await initUserProfileAndBusinesses(firebaseUser);
         } else {
-          setUser(null);
-          setUserProfile(null);
-          setBusinesses([]);
-          setCurrentBusiness(null);
+          // Check if there is an active direct login session
+          const storedDirect = localStorage.getItem('dms_direct_user');
+          if (storedDirect) {
+            try {
+              const parsed = JSON.parse(storedDirect);
+              const direct = createDirectUser(parsed.email, parsed.displayName, parsed.uid);
+              if (isMounted) setUser(direct);
+              await initUserProfileAndBusinesses(direct);
+            } catch (e) {
+              console.warn('Failed to restore direct session:', e);
+              if (isMounted) {
+                setUser(null);
+                setUserProfile(null);
+                setBusinesses([]);
+                setCurrentBusiness(null);
+              }
+            }
+          } else {
+            if (isMounted) {
+              setUser(null);
+              setUserProfile(null);
+              setBusinesses([]);
+              setCurrentBusiness(null);
+            }
+          }
         }
-        setLoading(false);
+      } catch (err) {
+        console.warn('Auth state resolution notice:', err);
+      } finally {
+        if (isMounted) setLoading(false);
       }
     });
 
-    return () => unsubscribe();
+    // Safety timeout: If Firebase auth listener stalls or network takes too long on deployed server,
+    // ensure loading screen doesn't block the UI forever.
+    const fallbackTimer = setTimeout(() => {
+      if (isMounted) setLoading(false);
+    }, 2000);
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      clearTimeout(fallbackTimer);
+    };
   }, []);
 
   const switchBusiness = (businessId: string) => {

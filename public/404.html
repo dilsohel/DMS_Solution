@@ -4,18 +4,15 @@
     <meta charset="utf-8">
     <title>DMS Solution</title>
     <script type="text/javascript">
-      // Single Page App redirect for GitHub Pages
-      var pathSegmentsToKeep = 0;
-      var l = window.location;
-      l.replace(
-        l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
-        l.pathname.split('/').slice(0, 1 + pathSegmentsToKeep).join('/') + '/?/' +
-        l.pathname.slice(1).split('/').slice(pathSegmentsToKeep).join('/').replace(/&/g, '~and~') +
-        (l.search ? '&' + l.search.slice(1).replace(/&/g, '~and~') : '') +
-        l.hash
-      );
+      // Safe SPA fallback: redirect to the app root of this domain/subpath
+      var path = window.location.pathname;
+      var parts = path.split('/').filter(Boolean);
+      // If hosted in a repository subpath like /repo-name/..., keep first segment
+      var target = parts.length > 0 ? '/' + parts[0] + '/' : '/';
+      window.location.replace(target);
     </script>
   </head>
   <body>
+    <p>Loading DMS Solution...</p>
   </body>
 </html>

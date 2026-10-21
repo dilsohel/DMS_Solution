@@ -14,6 +14,7 @@ import {
   Settings,
   HelpCircle,
   MessageCircle,
+  Sparkles,
 } from 'lucide-react';
 import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
@@ -42,6 +43,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Dashboard',
       icon: LayoutDashboard,
       badge: null,
+    },
+    {
+      id: 'ai-copilot',
+      label: 'AI Copilot & Search',
+      icon: Sparkles,
+      badge: 'Gemini',
+      badgeColor: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
     },
     {
       id: 'sales',
