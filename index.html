@@ -20,6 +20,8 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
     <style>
       :root {
         --dms-bg: #f8fbff;
@@ -339,6 +341,169 @@
       function fmtMoney(val, currency = '৳') {
         const num = Number(val || 0);
         return `${esc(currency)}${num.toLocaleString()}`;
+      }
+
+      function pdfSafeText(val) {
+        if (val === null || val === undefined) return '';
+        return String(val)
+          .replace(/৳/g, 'BDT ')
+          .replace(/₹/g, 'INR ')
+          .replace(/[—–]/g, '-')
+          .replace(/×/g, 'x')
+          .replace(/•/g, '|')
+          .replace(/[^\x20-\x7E\xA0-\xFF]/g, '');
+      }
+
+      function pdfCurrencyPrefix(biz) {
+        const cur = String(biz?.currency || '৳').trim();
+        if (cur === '৳') return 'BDT ';
+        if (cur === '₹') return 'INR ';
+        if (/^[\x20-\x7E£€¥]+$/.test(cur)) return cur;
+        return (biz?.currencyCode ? String(biz.currencyCode) + ' ' : 'BDT ');
+      }
+
+      function fmtMoneyPdf(val, biz) {
+        const num = Number(val || 0);
+        const absStr = Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+        return `${num < 0 ? '-' : ''}${pdfCurrencyPrefix(biz)}${absStr}`;
+      }
+
+      async function ensurePdfLibs() {
+        const loadScript = (src) =>
+          new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = src;
+            s.onload = resolve;
+            s.onerror = () => reject(new Error('Failed to load PDF library'));
+            document.head.appendChild(s);
+          });
+        if (!window.jspdf?.jsPDF) {
+          await loadScript('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js');
+        }
+        const testDoc = new window.jspdf.jsPDF();
+        if (typeof testDoc.autoTable !== 'function') {
+          await loadScript('https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js');
+        }
+      }
+
+      function createStyledPdfDoc({ title, subtitle = '', periodLabel = '', kpis = [], orientation = 'portrait' }) {
+        const biz = state.currentBusiness || {};
+        const doc = new window.jspdf.jsPDF({ orientation, unit: 'pt', format: 'a4' });
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const marginX = 36;
+        const contentW = pageWidth - marginX * 2;
+
+        // Top dual-tone accent bar
+        doc.setFillColor(2, 132, 199);
+        doc.rect(0, 0, pageWidth * 0.65, 6, 'F');
+        doc.setFillColor(5, 150, 105);
+        doc.rect(pageWidth * 0.65, 0, pageWidth * 0.35, 6, 'F');
+
+        // Shop Logo or Initials Monogram
+        const logoUrl = String(biz.logoUrl || '').trim();
+        let logoRendered = false;
+        if (logoUrl.startsWith('data:image/')) {
+          try {
+            const fmt = logoUrl.includes('image/png') ? 'PNG' : 'JPEG';
+            doc.addImage(logoUrl, fmt, marginX, 22, 36, 36);
+            logoRendered = true;
+          } catch {}
+        }
+        if (!logoRendered) {
+          doc.setFillColor(2, 132, 199);
+          doc.roundedRect(marginX, 22, 36, 36, 6, 6, 'F');
+          doc.setTextColor(255, 255, 255);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(13);
+          doc.text(getShopInitials(biz.name || 'Shop'), marginX + 18, 44, { align: 'center' });
+        }
+
+        // Business info on left
+        const textX = marginX + 46;
+        doc.setTextColor(15, 23, 42);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(14);
+        doc.text(pdfSafeText(biz.name || 'Business Workspace'), textX, 35);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(71, 85, 105);
+        const contactParts = [biz.address, biz.phone, biz.email].filter(Boolean).map(pdfSafeText);
+        if (contactParts.length > 0) {
+          doc.text(contactParts.join('  |  '), textX, 48, { maxWidth: contentW * 0.52 });
+        }
+        if (biz.financialYear) {
+          doc.text(`Financial Year: ${pdfSafeText(biz.financialYear)}`, textX, 59);
+        }
+
+        // Report Title & Metadata on right
+        doc.setTextColor(2, 132, 199);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(13);
+        doc.text(pdfSafeText(title).toUpperCase(), pageWidth - marginX, 34, { align: 'right' });
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(71, 85, 105);
+        if (subtitle) {
+          doc.text(pdfSafeText(subtitle), pageWidth - marginX, 46, { align: 'right' });
+        }
+        const genStr = new Date().toISOString().replace('T', ' ').slice(0, 16);
+        const metaLine = [periodLabel ? `Period: ${pdfSafeText(periodLabel)}` : '', `Generated: ${genStr}`].filter(Boolean).join('  |  ');
+        doc.text(metaLine, pageWidth - marginX, 58, { align: 'right' });
+
+        // Divider
+        doc.setDrawColor(203, 213, 225);
+        doc.setLineWidth(0.75);
+        doc.line(marginX, 70, pageWidth - marginX, 70);
+
+        let curY = 84;
+
+        // Optional KPI Summary Cards
+        if (Array.isArray(kpis) && kpis.length > 0) {
+          const gap = 10;
+          const cardW = (contentW - gap * (kpis.length - 1)) / kpis.length;
+          const cardH = 44;
+          kpis.forEach((k, idx) => {
+            const x = marginX + idx * (cardW + gap);
+            doc.setFillColor(248, 250, 252);
+            doc.setDrawColor(226, 232, 240);
+            doc.roundedRect(x, curY, cardW, cardH, 5, 5, 'FD');
+
+            const accent = k.color || [2, 132, 199];
+            doc.setFillColor(accent[0], accent[1], accent[2]);
+            doc.rect(x, curY + 4, 3, cardH - 8, 'F');
+
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(7.2);
+            doc.setTextColor(100, 116, 139);
+            doc.text(pdfSafeText(k.label).toUpperCase(), x + 10, curY + 15);
+
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(10.5);
+            doc.setTextColor(accent[0], accent[1], accent[2]);
+            doc.text(pdfSafeText(k.value), x + 10, curY + 32, { maxWidth: cardW - 14 });
+          });
+          curY += cardH + 16;
+        }
+
+        const addFooters = () => {
+          const totalPages = doc.getNumberOfPages();
+          for (let i = 1; i <= totalPages; i++) {
+            doc.setPage(i);
+            doc.setDrawColor(226, 232, 240);
+            doc.setLineWidth(0.5);
+            doc.line(marginX, pageHeight - 32, pageWidth - marginX, pageHeight - 32);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8);
+            doc.setTextColor(100, 116, 139);
+            doc.text(pdfSafeText(`${biz.name || 'DMS Solution'} | Confidential Financial Statement`), marginX, pageHeight - 19);
+            doc.text(`Page ${i} of ${totalPages}`, pageWidth - marginX, pageHeight - 19, { align: 'right' });
+          }
+        };
+
+        return { doc, startY: curY, pageWidth, pageHeight, marginX, contentW, addFooters };
       }
 
       function showToast(message, type = 'success', durationMs = 4000) {
@@ -4723,13 +4888,13 @@
         `;
       }
 
-      function renderReportsView() {
-        const c = state.currentBusiness.currency || '৳';
-        const tf = state.reportsTimeFilter;
+      function getFilteredReportData() {
+        const tf = state.reportsTimeFilter || 'MONTH';
         const now = new Date();
         const todayStr = now.toISOString().slice(0, 10);
         const monthStr = now.toISOString().slice(0, 7);
         const yearStr = String(now.getFullYear());
+        const periodLabels = { TODAY: `Today (${todayStr})`, MONTH: `This Month (${monthStr})`, YEAR: `Year ${yearStr}`, ALL: 'All Time' };
 
         const inRange = (iso) => {
           if (!iso || tf === 'ALL') return true;
@@ -4765,6 +4930,473 @@
         const grossMargin = netSales > 0 ? ((grossProfit / netSales) * 100).toFixed(1) : '0.0';
         const netMargin = netSales > 0 ? ((netProfit / netSales) * 100).toFixed(1) : '0.0';
         const m = computeMetrics();
+
+        return {
+          tf,
+          periodLabel: periodLabels[tf] || 'All Time',
+          sales,
+          purchases,
+          expenses,
+          returns,
+          cashbook,
+          grossSales,
+          saleReturnsAmt,
+          purchaseReturnsAmt,
+          netSales,
+          netCogs,
+          grossProfit,
+          otherIncome,
+          totalExpenses,
+          netProfit,
+          grossMargin,
+          netMargin,
+          m,
+        };
+      }
+
+      async function exportFinancialReportPdf() {
+        try {
+          await ensurePdfLibs();
+        } catch (err) {
+          showToast('Could not load PDF generator. Check your internet connection.', 'error');
+          return;
+        }
+        const biz = state.currentBusiness || {};
+        const repType = state.reportsType || 'PL';
+        const d = getFilteredReportData();
+        const m = d.m;
+        const dateTag = new Date().toISOString().slice(0, 10);
+
+        const titles = {
+          PL: 'Profit & Loss Statement',
+          BS: 'Balance Sheet',
+          DAYBOOK: 'Day Book & Cash Flow',
+          RETURNS: 'Returns & Credit/Debit Notes',
+          SALES: 'Sales Register Report',
+          PURCHASES: 'Purchases Register Report',
+          STOCK: 'Inventory Stock Valuation',
+          DUES: 'Customer Receivables Report',
+          PAYABLES: 'Supplier Payables Report',
+        };
+
+        const isWide = ['DAYBOOK', 'RETURNS', 'SALES', 'PURCHASES', 'STOCK'].includes(repType);
+        const orientation = isWide ? 'landscape' : 'portrait';
+        let kpis = [];
+
+        if (repType === 'PL') {
+          kpis = [
+            { label: 'Net Sales Revenue', value: fmtMoneyPdf(d.netSales, biz), color: [15, 23, 42] },
+            { label: `Gross Profit (${d.grossMargin}%)`, value: fmtMoneyPdf(d.grossProfit, biz), color: [2, 132, 199] },
+            { label: 'Operating Expenses', value: fmtMoneyPdf(d.totalExpenses, biz), color: [225, 29, 72] },
+            { label: `Net Profit (${d.netMargin}%)`, value: fmtMoneyPdf(d.netProfit, biz), color: d.netProfit >= 0 ? [5, 150, 105] : [225, 29, 72] },
+          ];
+        } else if (repType === 'BS') {
+          const totalAssets = m.cashBalance + m.bankBalance + m.mfsBalance + m.inventoryValue + m.totalReceivables;
+          const totalLiab = m.totalPayables + m.loansPayable;
+          const totalEquity = totalAssets - totalLiab;
+          kpis = [
+            { label: 'Total Assets', value: fmtMoneyPdf(totalAssets, biz), color: [2, 132, 199] },
+            { label: 'Total Liabilities', value: fmtMoneyPdf(totalLiab, biz), color: [225, 29, 72] },
+            { label: "Owner's Equity", value: fmtMoneyPdf(totalEquity, biz), color: [5, 150, 105] },
+          ];
+        } else if (repType === 'DAYBOOK') {
+          const pIn = d.cashbook.filter((e) => e.direction === 'IN').reduce((s, e) => s + Number(e.amount || 0), 0);
+          const pOut = d.cashbook.filter((e) => e.direction === 'OUT').reduce((s, e) => s + Number(e.amount || 0), 0);
+          kpis = [
+            { label: 'Total Cash Inflow', value: `+${fmtMoneyPdf(pIn, biz)}`, color: [5, 150, 105] },
+            { label: 'Total Cash Outflow', value: `-${fmtMoneyPdf(pOut, biz)}`, color: [225, 29, 72] },
+            { label: 'Net Cash Movement', value: fmtMoneyPdf(pIn - pOut, biz), color: [2, 132, 199] },
+            { label: 'Transactions', value: String(d.cashbook.length), color: [15, 23, 42] },
+          ];
+        } else if (repType === 'RETURNS') {
+          kpis = [
+            { label: 'Sales Returns (Credit)', value: fmtMoneyPdf(d.saleReturnsAmt, biz), color: [217, 119, 6] },
+            { label: 'Purchase Returns (Debit)', value: fmtMoneyPdf(d.purchaseReturnsAmt, biz), color: [2, 132, 199] },
+            { label: 'Total Return Records', value: String(d.returns.length), color: [15, 23, 42] },
+          ];
+        } else if (repType === 'SALES') {
+          const paidSum = d.sales.reduce((s, x) => s + Number(x.paidAmount || 0), 0);
+          const dueSum = d.sales.reduce((s, x) => s + Number(x.dueAmount || 0), 0);
+          kpis = [
+            { label: 'Invoices', value: String(d.sales.length), color: [15, 23, 42] },
+            { label: 'Gross Sales', value: fmtMoneyPdf(d.grossSales, biz), color: [2, 132, 199] },
+            { label: 'Collected', value: fmtMoneyPdf(paidSum, biz), color: [5, 150, 105] },
+            { label: 'Due Receivable', value: fmtMoneyPdf(dueSum, biz), color: [225, 29, 72] },
+          ];
+        } else if (repType === 'PURCHASES') {
+          const totPur = d.purchases.reduce((s, x) => s + Number(x.total || 0), 0);
+          const paidPur = d.purchases.reduce((s, x) => s + Number(x.paidAmount || 0), 0);
+          const duePur = d.purchases.reduce((s, x) => s + Number(x.dueAmount || 0), 0);
+          kpis = [
+            { label: 'Purchase Bills', value: String(d.purchases.length), color: [15, 23, 42] },
+            { label: 'Total Purchased', value: fmtMoneyPdf(totPur, biz), color: [2, 132, 199] },
+            { label: 'Total Paid', value: fmtMoneyPdf(paidPur, biz), color: [5, 150, 105] },
+            { label: 'Bill Dues', value: fmtMoneyPdf(duePur, biz), color: [225, 29, 72] },
+          ];
+        } else if (repType === 'STOCK') {
+          const units = state.products.reduce((s, p) => s + Number(p.currentStock || 0), 0);
+          kpis = [
+            { label: 'Total SKUs', value: String(state.products.length), color: [15, 23, 42] },
+            { label: 'Total Stock Units', value: units.toLocaleString('en-US'), color: [2, 132, 199] },
+            { label: 'Low Stock Alerts', value: String(m.lowStockCount), color: m.lowStockCount > 0 ? [225, 29, 72] : [5, 150, 105] },
+            { label: 'Valuation (at Cost)', value: fmtMoneyPdf(m.inventoryValue, biz), color: [5, 150, 105] },
+          ];
+        } else if (repType === 'PAYABLES') {
+          const payList = state.suppliers.filter((x) => Number(x.currentDue || 0) > 0);
+          kpis = [
+            { label: 'Suppliers With Dues', value: String(payList.length), color: [15, 23, 42] },
+            { label: 'Total Payable Balance', value: fmtMoneyPdf(m.totalPayables, biz), color: [225, 29, 72] },
+          ];
+        } else {
+          const dueList = state.customers.filter((x) => Number(x.currentDue || 0) > 0);
+          kpis = [
+            { label: 'Customers With Dues', value: String(dueList.length), color: [15, 23, 42] },
+            { label: 'Total Receivables', value: fmtMoneyPdf(m.totalReceivables, biz), color: [217, 119, 6] },
+          ];
+        }
+
+        const { doc, startY, marginX, addFooters } = createStyledPdfDoc({
+          title: titles[repType] || 'Financial Report',
+          subtitle: 'Cloud Ledger Financial Report',
+          periodLabel: repType === 'BS' || repType === 'STOCK' || repType === 'DUES' || repType === 'PAYABLES' ? `As of ${dateTag}` : d.periodLabel,
+          kpis,
+          orientation,
+        });
+
+        const baseTableOpts = {
+          startY,
+          margin: { left: marginX, right: marginX, bottom: 44 },
+          styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 6, textColor: [15, 23, 42], lineColor: [226, 232, 240], lineWidth: 0.4 },
+          headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8.5 },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+        };
+
+        if (repType === 'PL') {
+          const expByCat = {};
+          d.expenses.forEach((e) => {
+            expByCat[e.category || 'Other'] = (expByCat[e.category || 'Other'] || 0) + Number(e.amount || 0);
+          });
+          const body = [
+            [`Gross Sales Revenue (${d.sales.length} invoices)`, fmtMoneyPdf(d.grossSales, biz)],
+            ['Less: Sales Returns & Credit Notes', `-${fmtMoneyPdf(d.saleReturnsAmt, biz)}`],
+            [{ content: 'Net Sales Revenue', styles: { fontStyle: 'bold', fillColor: [241, 245, 249] } }, { content: fmtMoneyPdf(d.netSales, biz), styles: { fontStyle: 'bold', fillColor: [241, 245, 249] } }],
+            ['Less: Net Cost of Goods Sold (COGS)', `-${fmtMoneyPdf(d.netCogs, biz)}`],
+            [{ content: `Gross Profit (${d.grossMargin}% margin)`, styles: { fontStyle: 'bold', fillColor: [224, 242, 254], textColor: [12, 74, 110] } }, { content: fmtMoneyPdf(d.grossProfit, biz), styles: { fontStyle: 'bold', fillColor: [224, 242, 254], textColor: [12, 74, 110] } }],
+          ];
+          if (d.otherIncome > 0) {
+            body.push(['Add: Other Business Income', `+${fmtMoneyPdf(d.otherIncome, biz)}`]);
+          }
+          body.push([{ content: `Less: Operating Expenses (${d.expenses.length} entries)`, styles: { fontStyle: 'bold' } }, { content: `-${fmtMoneyPdf(d.totalExpenses, biz)}`, styles: { fontStyle: 'bold', textColor: [190, 18, 60] } }]);
+          Object.entries(expByCat).forEach(([cat, amt]) => {
+            body.push([`   - ${pdfSafeText(cat)}`, fmtMoneyPdf(amt, biz)]);
+          });
+          const npFill = d.netProfit >= 0 ? [209, 250, 229] : [255, 228, 230];
+          const npText = d.netProfit >= 0 ? [6, 95, 70] : [159, 18, 57];
+          body.push([
+            { content: `NET PROFIT / (LOSS) (${d.netMargin}% net margin)`, styles: { fontStyle: 'bold', fontSize: 10, fillColor: npFill, textColor: npText } },
+            { content: fmtMoneyPdf(d.netProfit, biz), styles: { fontStyle: 'bold', fontSize: 10, fillColor: npFill, textColor: npText } },
+          ]);
+          doc.autoTable({
+            ...baseTableOpts,
+            head: [['Income Statement Line Item', 'Amount']],
+            body,
+            columnStyles: { 0: { cellWidth: 'auto' }, 1: { halign: 'right', cellWidth: 150 } },
+          });
+        } else if (repType === 'BS') {
+          const totalAssets = m.cashBalance + m.bankBalance + m.mfsBalance + m.inventoryValue + m.totalReceivables;
+          const totalLiab = m.totalPayables + m.loansPayable;
+          const totalEquity = totalAssets - totalLiab;
+          const reconciliationGap = totalEquity - ((m.ownerCapitalTotal - m.ownerDrawingsTotal) + m.netProfit);
+
+          doc.autoTable({
+            ...baseTableOpts,
+            head: [['ASSETS', 'Amount']],
+            body: [
+              ['Cash in Hand', fmtMoneyPdf(m.cashBalance, biz)],
+              ['Bank Accounts', fmtMoneyPdf(m.bankBalance, biz)],
+              ['MFS (bKash / Nagad)', fmtMoneyPdf(m.mfsBalance, biz)],
+              ['Inventory Stock Value (at Cost)', fmtMoneyPdf(m.inventoryValue, biz)],
+              ['Accounts Receivable (Customer Dues)', fmtMoneyPdf(m.totalReceivables, biz)],
+              [{ content: 'TOTAL ASSETS', styles: { fontStyle: 'bold', fillColor: [224, 242, 254], textColor: [12, 74, 110] } }, { content: fmtMoneyPdf(totalAssets, biz), styles: { fontStyle: 'bold', fillColor: [224, 242, 254], textColor: [12, 74, 110] } }],
+            ],
+            columnStyles: { 1: { halign: 'right', cellWidth: 150 } },
+          });
+
+          const liabBody = [
+            ['Supplier Payables', fmtMoneyPdf(m.totalPayables, biz)],
+            ['Loans Payable', fmtMoneyPdf(m.loansPayable, biz)],
+            ['Owner Capital Contributed', fmtMoneyPdf(m.ownerCapitalTotal, biz)],
+            ['Less: Owner Drawings', `-${fmtMoneyPdf(m.ownerDrawingsTotal, biz)}`],
+            ['Net Profit (P&L)', fmtMoneyPdf(m.netProfit, biz)],
+          ];
+          if (Math.abs(reconciliationGap) > 0.01) {
+            liabBody.push(['Opening Stock / Retained Equity', fmtMoneyPdf(reconciliationGap, biz)]);
+          }
+          liabBody.push([{ content: "Total Owner's Equity", styles: { fontStyle: 'bold' } }, { content: fmtMoneyPdf(totalEquity, biz), styles: { fontStyle: 'bold' } }]);
+          liabBody.push([{ content: 'TOTAL LIABILITIES + EQUITY', styles: { fontStyle: 'bold', fillColor: [209, 250, 229], textColor: [6, 95, 70] } }, { content: fmtMoneyPdf(totalAssets, biz), styles: { fontStyle: 'bold', fillColor: [209, 250, 229], textColor: [6, 95, 70] } }]);
+
+          doc.autoTable({
+            ...baseTableOpts,
+            startY: doc.lastAutoTable.finalY + 18,
+            head: [["LIABILITIES & OWNER'S EQUITY", 'Amount']],
+            body: liabBody,
+            columnStyles: { 1: { halign: 'right', cellWidth: 150 } },
+          });
+        } else if (repType === 'DAYBOOK') {
+          doc.autoTable({
+            ...baseTableOpts,
+            head: [['Date', 'Entry Type', 'Account', 'Party / Notes', 'Ref #', 'Direction', 'Amount']],
+            body:
+              d.cashbook.length === 0
+                ? [['-', 'No daybook entries found in this period.', '-', '-', '-', '-', '-']]
+                : d.cashbook.map((e) => [
+                    pdfSafeText((e.date || e.createdAt || '').slice(0, 10)),
+                    pdfSafeText((e.entryType || '').replace(/_/g, ' ')),
+                    pdfSafeText(e.accountName || '-'),
+                    pdfSafeText(`${e.partyName || ''}${e.notes ? ' - ' + e.notes : ''}`),
+                    pdfSafeText(e.referenceId || '-'),
+                    pdfSafeText(e.direction || '-'),
+                    `${e.direction === 'IN' ? '+' : '-'}${fmtMoneyPdf(e.amount, biz)}`,
+                  ]),
+            columnStyles: { 5: { halign: 'center' }, 6: { halign: 'right', fontStyle: 'bold' } },
+          });
+        } else if (repType === 'RETURNS') {
+          doc.autoTable({
+            ...baseTableOpts,
+            head: [['Return #', 'Type', 'Ref #', 'Party', 'Date', 'Cash Refund', 'Due Adjusted', 'Total Amount']],
+            body:
+              d.returns.length === 0
+                ? [['-', 'No return records in this period.', '-', '-', '-', '-', '-', '-']]
+                : d.returns.map((r) => [
+                    pdfSafeText(r.returnNumber || r.id.slice(-8)),
+                    pdfSafeText(r.type === 'SALE_RETURN' ? 'Sales Return' : 'Purchase Return'),
+                    pdfSafeText(r.referenceId || '-'),
+                    pdfSafeText(r.partyName || '-'),
+                    pdfSafeText((r.createdAt || '').slice(0, 10)),
+                    fmtMoneyPdf(r.cashRefund ?? 0, biz),
+                    fmtMoneyPdf(r.dueAdjusted ?? 0, biz),
+                    fmtMoneyPdf(r.totalAmount || r.totalRefund || 0, biz),
+                  ]),
+            columnStyles: { 5: { halign: 'right' }, 6: { halign: 'right' }, 7: { halign: 'right', fontStyle: 'bold' } },
+          });
+        } else if (repType === 'SALES') {
+          doc.autoTable({
+            ...baseTableOpts,
+            head: [['Invoice #', 'Date', 'Customer', 'Method', 'Total', 'Paid', 'Due', 'Status']],
+            body:
+              d.sales.length === 0
+                ? [['-', 'No sales invoices in this period.', '-', '-', '-', '-', '-', '-']]
+                : d.sales.map((s) => [
+                    pdfSafeText(s.invoiceNumber),
+                    pdfSafeText((s.createdAt || '').slice(0, 10)),
+                    pdfSafeText(s.customerName),
+                    pdfSafeText((s.paymentMethod || 'cash').toUpperCase()),
+                    fmtMoneyPdf(s.total, biz),
+                    fmtMoneyPdf(s.paidAmount, biz),
+                    fmtMoneyPdf(s.dueAmount, biz),
+                    pdfSafeText(s.status || '-'),
+                  ]),
+            columnStyles: { 4: { halign: 'right', fontStyle: 'bold' }, 5: { halign: 'right' }, 6: { halign: 'right' }, 7: { halign: 'center' } },
+          });
+        } else if (repType === 'PURCHASES') {
+          doc.autoTable({
+            ...baseTableOpts,
+            head: [['Bill #', 'Date', 'Supplier', 'Total', 'Paid', 'Due', 'Status']],
+            body:
+              d.purchases.length === 0
+                ? [['-', 'No purchase bills in this period.', '-', '-', '-', '-', '-']]
+                : d.purchases.map((p) => [
+                    pdfSafeText(p.billNumber),
+                    pdfSafeText((p.createdAt || '').slice(0, 10)),
+                    pdfSafeText(p.supplierName),
+                    fmtMoneyPdf(p.total, biz),
+                    fmtMoneyPdf(p.paidAmount, biz),
+                    fmtMoneyPdf(p.dueAmount, biz),
+                    pdfSafeText(p.status || '-'),
+                  ]),
+            columnStyles: { 3: { halign: 'right', fontStyle: 'bold' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'center' } },
+          });
+        } else if (repType === 'STOCK') {
+          doc.autoTable({
+            ...baseTableOpts,
+            head: [['Product', 'SKU', 'Category', 'Stock Qty', 'Unit Cost', 'Sell Price', 'Stock Valuation']],
+            body:
+              state.products.length === 0
+                ? [['-', 'No products in catalog.', '-', '-', '-', '-', '-']]
+                : state.products.map((p) => [
+                    pdfSafeText(p.name),
+                    pdfSafeText(p.sku || '-'),
+                    pdfSafeText(p.category || '-'),
+                    `${Number(p.currentStock || 0)} ${pdfSafeText(p.unit || 'pcs')}`,
+                    fmtMoneyPdf(p.purchasePrice, biz),
+                    fmtMoneyPdf(p.sellingPrice, biz),
+                    fmtMoneyPdf((p.currentStock || 0) * (p.purchasePrice || 0), biz),
+                  ]),
+            columnStyles: { 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right', fontStyle: 'bold' } },
+          });
+        } else if (repType === 'PAYABLES') {
+          const payables = state.suppliers.filter((x) => Number(x.currentDue || 0) > 0);
+          doc.autoTable({
+            ...baseTableOpts,
+            head: [['Supplier', 'Phone', 'Total Purchased', 'Total Paid', 'Payable Balance']],
+            body:
+              payables.length === 0
+                ? [['-', 'No supplier payables pending.', '-', '-', '-']]
+                : payables.map((x) => [
+                    pdfSafeText(x.name),
+                    pdfSafeText(x.phone || '-'),
+                    fmtMoneyPdf(Number(x.totalPurchased || 0) + Number(x.openingBalance || 0), biz),
+                    fmtMoneyPdf(x.totalPaid || 0, biz),
+                    fmtMoneyPdf(x.currentDue || 0, biz),
+                  ]),
+            columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right', fontStyle: 'bold', textColor: [190, 18, 60] } },
+          });
+        } else {
+          const dues = state.customers.filter((x) => Number(x.currentDue || 0) > 0);
+          doc.autoTable({
+            ...baseTableOpts,
+            head: [['Customer', 'Phone', 'Total Billed', 'Total Paid', 'Receivable Due']],
+            body:
+              dues.length === 0
+                ? [['-', 'No customer dues pending.', '-', '-', '-']]
+                : dues.map((x) => [
+                    pdfSafeText(x.name),
+                    pdfSafeText(x.phone || '-'),
+                    fmtMoneyPdf(x.totalPurchases || 0, biz),
+                    fmtMoneyPdf(x.totalPaid || 0, biz),
+                    fmtMoneyPdf(x.currentDue || 0, biz),
+                  ]),
+            columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right', fontStyle: 'bold', textColor: [180, 83, 9] } },
+          });
+        }
+
+        addFooters();
+        const slug = (titles[repType] || repType).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        doc.save(`dms-${slug}-${dateTag}.pdf`);
+        showToast(`${titles[repType] || 'Report'} exported to PDF!`);
+      }
+
+      async function exportSupplierLedgerPdf(sup, data, activeTab = 'statement', fromDate = '', toDate = '') {
+        try {
+          await ensurePdfLibs();
+        } catch {
+          showToast('Could not load PDF generator. Check your internet connection.', 'error');
+          return;
+        }
+        const biz = state.currentBusiness || {};
+        const sm = data.summary;
+        const inRange = (dt) => {
+          const day = String(dt || '').slice(0, 10);
+          if (!day || day === '-') return true;
+          if (fromDate && day < fromDate) return false;
+          if (toDate && day > toDate) return false;
+          return true;
+        };
+        const rowsStmt = data.statementRows.filter((r) => inRange(r.date));
+        const rowsPur = data.purchases.filter((p) => inRange(p.createdAt));
+        const rowsPay = data.payments.filter((pm) => inRange(pm.date || pm.createdAt));
+        const rangeLabel = fromDate || toDate ? `${fromDate || 'Start'} to ${toDate || 'Today'}` : 'All Time';
+
+        const { doc, startY, marginX, addFooters } = createStyledPdfDoc({
+          title: 'Supplier Ledger Statement',
+          subtitle: `${sup.name}${sup.company ? ' (' + sup.company + ')' : ''} | ${sup.phone || ''}`,
+          periodLabel: rangeLabel,
+          kpis: [
+            { label: 'Total Purchased', value: fmtMoneyPdf(sm.totalPurchased, biz), color: [15, 23, 42] },
+            { label: 'Total Paid', value: fmtMoneyPdf(sm.totalPaidAll, biz), color: [5, 150, 105] },
+            { label: 'Returns Adjusted', value: fmtMoneyPdf(sm.totalReturnedDueAdj, biz), color: [217, 119, 6] },
+            { label: 'Current Due', value: fmtMoneyPdf(sm.currentDue, biz), color: sm.currentDue > 0 ? [225, 29, 72] : [5, 150, 105] },
+          ],
+          orientation: 'portrait',
+        });
+
+        const baseOpts = {
+          startY,
+          margin: { left: marginX, right: marginX, bottom: 44 },
+          styles: { font: 'helvetica', fontSize: 8.2, cellPadding: 5.5, textColor: [15, 23, 42], lineColor: [226, 232, 240], lineWidth: 0.4 },
+          headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+        };
+
+        if (activeTab === 'purchases') {
+          doc.autoTable({
+            ...baseOpts,
+            head: [['Bill #', 'Date', 'Items', 'Total', 'Paid', 'Due', 'Status']],
+            body: rowsPur.length === 0
+              ? [['-', 'No purchase bills found.', '-', '-', '-', '-', '-']]
+              : rowsPur.map((p) => [
+                  pdfSafeText(p.billNumber),
+                  pdfSafeText((p.createdAt || '').slice(0, 10)),
+                  pdfSafeText((p.items || []).map((it) => `${it.productName} x${it.quantity}`).join(', ')),
+                  fmtMoneyPdf(p.total, biz),
+                  fmtMoneyPdf(p.paidAmount, biz),
+                  fmtMoneyPdf(p.dueAmount, biz),
+                  pdfSafeText(p.status || 'DUE'),
+                ]),
+            columnStyles: { 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right', fontStyle: 'bold' } },
+          });
+        } else if (activeTab === 'payments') {
+          doc.autoTable({
+            ...baseOpts,
+            head: [['Date', 'Payment Ref', 'Account', 'Linked Bill', 'Notes', 'Amount Paid']],
+            body: rowsPay.length === 0
+              ? [['-', 'No supplier payments recorded.', '-', '-', '-', '-']]
+              : rowsPay.map((pm) => [
+                  pdfSafeText(pm.date || '-'),
+                  pdfSafeText(pm.ref),
+                  pdfSafeText(pm.accountName),
+                  pdfSafeText(pm.billNumber || 'General A/C'),
+                  pdfSafeText(pm.notes || '-'),
+                  fmtMoneyPdf(pm.amount, biz),
+                ]),
+            columnStyles: { 5: { halign: 'right', fontStyle: 'bold', textColor: [5, 150, 105] } },
+          });
+        } else {
+          doc.autoTable({
+            ...baseOpts,
+            head: [['Date', 'Ref #', 'Particulars', 'Billed (+)', 'Paid / Adj (-)', 'Running Due']],
+            body: rowsStmt.length === 0
+              ? [['-', '-', 'No transactions found.', '-', '-', '-']]
+              : rowsStmt.map((r) => [
+                  pdfSafeText(r.date),
+                  pdfSafeText(r.ref),
+                  pdfSafeText(`${r.description}${r.subtext ? ' (' + r.subtext + ')' : ''}`),
+                  r.billed > 0 ? fmtMoneyPdf(r.billed, biz) : '-',
+                  r.paid + r.returnedDue > 0 ? `-${fmtMoneyPdf(r.paid + r.returnedDue, biz)}` : '-',
+                  fmtMoneyPdf(r.runningBalance, biz),
+                ]),
+            columnStyles: { 3: { halign: 'right' }, 4: { halign: 'right', textColor: [5, 150, 105] }, 5: { halign: 'right', fontStyle: 'bold' } },
+          });
+        }
+
+        addFooters();
+        const slug = (sup.name || 'supplier').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        doc.save(`dms-supplier-ledger-${slug}-${new Date().toISOString().slice(0, 10)}.pdf`);
+        showToast('Supplier ledger PDF exported!');
+      }
+
+      function renderReportsView() {
+        const c = state.currentBusiness.currency || '৳';
+        const {
+          tf,
+          sales,
+          purchases,
+          expenses,
+          returns,
+          cashbook,
+          grossSales,
+          saleReturnsAmt,
+          purchaseReturnsAmt,
+          netSales,
+          netCogs,
+          grossProfit,
+          otherIncome,
+          totalExpenses,
+          netProfit,
+          grossMargin,
+          netMargin,
+          m,
+        } = getFilteredReportData();
 
         const tabs = [
           ['PL', 'Profit & Loss'],
@@ -4918,8 +5550,9 @@
                   <option value="YEAR" ${tf === 'YEAR' ? 'selected' : ''}>This Year</option>
                   <option value="ALL" ${tf === 'ALL' ? 'selected' : ''}>All Time</option>
                 </select>
-                <button type="button" id="btn-export-csv" class="px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">Export CSV</button>
-                <button type="button" onclick="window.print()" class="px-3.5 py-2 rounded-xl bg-sky-600 text-white text-xs font-bold">Print</button>
+                <button type="button" id="btn-export-csv" class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold">Export CSV</button>
+                <button type="button" id="btn-export-pdf" class="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs">Export PDF</button>
+                <button type="button" onclick="window.print()" class="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold">Print</button>
               </div>
             </div>
 
@@ -5723,6 +6356,7 @@
               </div>
               <div class="flex flex-wrap gap-2">
                 <button type="button" id="btn-sl-export-csv" class="px-4 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold">Export CSV</button>
+                <button type="button" id="btn-sl-export-pdf" class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold">Export PDF</button>
                 <button type="button" onclick="window.print()" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold">Print Statement</button>
               </div>
             </div>
@@ -5767,6 +6401,10 @@
               a.download = `supplier-ledger-${(sup.name || 'supplier').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.csv`;
               a.click();
             };
+          }
+          const expPdfBtn = root.querySelector('#btn-sl-export-pdf');
+          if (expPdfBtn) {
+            expPdfBtn.onclick = () => exportSupplierLedgerPdf(sup, data, activeTab, fromDate, toDate);
           }
 
           root.querySelectorAll('[data-sl-pay-bill]').forEach((b) => {
@@ -7662,22 +8300,50 @@
         const csvBtn = document.getElementById('btn-export-csv');
         if (csvBtn) {
           csvBtn.onclick = () => {
+            const d = getFilteredReportData();
             let rows = [];
             let name = state.reportsType.toLowerCase();
-            if (state.reportsType === 'DAYBOOK') {
-              rows = [['Date', 'Type', 'Direction', 'Account', 'Party', 'Reference', 'Notes', 'Amount'], ...state.cashbook.map((e) => [(e.date || e.createdAt || '').slice(0, 10), e.entryType, e.direction, e.accountName, e.partyName, e.referenceId, e.notes, e.amount])];
+            if (state.reportsType === 'PL') {
+              rows = [
+                ['Line Item', 'Amount'],
+                ['Gross Sales Revenue', d.grossSales],
+                ['Less: Sales Returns', -d.saleReturnsAmt],
+                ['Net Sales Revenue', d.netSales],
+                ['Less: Net COGS', -d.netCogs],
+                ['Gross Profit', d.grossProfit],
+                ['Add: Other Income', d.otherIncome],
+                ['Less: Operating Expenses', -d.totalExpenses],
+                ['Net Profit / Loss', d.netProfit],
+              ];
+            } else if (state.reportsType === 'BS') {
+              const totalAssets = d.m.cashBalance + d.m.bankBalance + d.m.mfsBalance + d.m.inventoryValue + d.m.totalReceivables;
+              const totalLiab = d.m.totalPayables + d.m.loansPayable;
+              rows = [
+                ['Account', 'Amount'],
+                ['Cash in Hand', d.m.cashBalance],
+                ['Bank Accounts', d.m.bankBalance],
+                ['MFS Balance', d.m.mfsBalance],
+                ['Inventory Stock Value', d.m.inventoryValue],
+                ['Accounts Receivable', d.m.totalReceivables],
+                ['Total Assets', totalAssets],
+                ['Supplier Payables', d.m.totalPayables],
+                ['Loans Payable', d.m.loansPayable],
+                ["Owner's Equity", totalAssets - totalLiab],
+              ];
+            } else if (state.reportsType === 'DAYBOOK') {
+              rows = [['Date', 'Type', 'Direction', 'Account', 'Party', 'Reference', 'Notes', 'Amount'], ...d.cashbook.map((e) => [(e.date || e.createdAt || '').slice(0, 10), e.entryType, e.direction, e.accountName, e.partyName, e.referenceId, e.notes, e.amount])];
             } else if (state.reportsType === 'RETURNS') {
-              rows = [['Return #', 'Type', 'Reference', 'Party', 'Total', 'Cash Refund', 'Due Adjusted', 'Reason', 'Date'], ...state.returns.map((r) => [r.returnNumber || r.id, r.type, r.referenceId, r.partyName, r.totalAmount || r.totalRefund, r.cashRefund, r.dueAdjusted, r.reason, (r.createdAt || '').slice(0, 10)])];
+              rows = [['Return #', 'Type', 'Reference', 'Party', 'Total', 'Cash Refund', 'Due Adjusted', 'Reason', 'Date'], ...d.returns.map((r) => [r.returnNumber || r.id, r.type, r.referenceId, r.partyName, r.totalAmount || r.totalRefund, r.cashRefund, r.dueAdjusted, r.reason, (r.createdAt || '').slice(0, 10)])];
             } else if (state.reportsType === 'PURCHASES') {
-              rows = [['Bill #', 'Date', 'Supplier', 'Total', 'Paid', 'Due', 'Status'], ...state.purchases.map((p) => [p.billNumber, (p.createdAt || '').slice(0, 10), p.supplierName, p.total, p.paidAmount, p.dueAmount, p.status])];
+              rows = [['Bill #', 'Date', 'Supplier', 'Total', 'Paid', 'Due', 'Status'], ...d.purchases.map((p) => [p.billNumber, (p.createdAt || '').slice(0, 10), p.supplierName, p.total, p.paidAmount, p.dueAmount, p.status])];
             } else if (state.reportsType === 'STOCK') {
               rows = [['Product', 'SKU', 'Stock', 'Unit', 'Cost', 'Value'], ...state.products.map((p) => [p.name, p.sku, p.currentStock, p.unit, p.purchasePrice, (p.currentStock || 0) * (p.purchasePrice || 0)])];
             } else if (state.reportsType === 'PAYABLES') {
-              rows = [['Supplier', 'Phone', 'Total Purchased', 'Payable Due'], ...state.suppliers.map((s) => [s.name, s.phone, s.totalPurchased, s.currentDue])];
+              rows = [['Supplier', 'Phone', 'Total Purchased', 'Total Paid', 'Payable Due'], ...state.suppliers.map((s) => [s.name, s.phone, Number(s.totalPurchased || 0) + Number(s.openingBalance || 0), s.totalPaid || 0, s.currentDue || 0])];
             } else if (state.reportsType === 'DUES') {
               rows = [['Customer', 'Phone', 'Total Billed', 'Receivable Due'], ...state.customers.map((c) => [c.name, c.phone, c.totalPurchases, c.currentDue])];
             } else {
-              rows = [['Invoice', 'Date', 'Customer', 'Total', 'Paid', 'Due', 'Status'], ...state.sales.map((s) => [s.invoiceNumber, (s.createdAt || '').slice(0, 10), s.customerName, s.total, s.paidAmount, s.dueAmount, s.status])];
+              rows = [['Invoice', 'Date', 'Customer', 'Total', 'Paid', 'Due', 'Status'], ...d.sales.map((s) => [s.invoiceNumber, (s.createdAt || '').slice(0, 10), s.customerName, s.total, s.paidAmount, s.dueAmount, s.status])];
             }
             const blob = new Blob([rows.map((r) => r.map((x) => `"${String(x ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
             const a = document.createElement('a');
@@ -7685,6 +8351,10 @@
             a.download = `dms-${name}-${new Date().toISOString().slice(0, 10)}.csv`;
             a.click();
           };
+        }
+        const pdfBtn = document.getElementById('btn-export-pdf');
+        if (pdfBtn) {
+          pdfBtn.onclick = () => exportFinancialReportPdf();
         }
 
         // Members
