@@ -16,6 +16,16 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isSuperAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email == 'dilmohammad9011@gmail.com' &&
+        request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
     function isBusinessOwner(businessId) {
       return isSignedIn() && (
         get(/databases/$(database)/documents/businesses/$(businessId)).data.ownerId == request.auth.uid
@@ -29,22 +39,52 @@ service cloud.firestore {
       );
     }
 
-    // Users collection (isolated to owner)
+    // Users collection (isolated to owner; admin can list/approve; users cannot self-approve)
     match /users/{userId} {
-      allow get, write: if isOwner(userId);
-      allow list: if isSignedIn() && request.auth.uid == userId;
+      allow get: if isOwner(userId) || isSuperAdmin();
+      allow list: if isSuperAdmin();
+      allow create: if isSuperAdmin() || (
+        isOwner(userId) &&
+        !request.resource.data.keys().hasAny(['approvedMonths', 'approvedPayments'])
+      );
+      allow update: if isSuperAdmin() || (
+        isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['approvedMonths', 'approvedPayments'])
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Subscription payment requests (user creates PENDING; only Super Admin can approve/reject/list all)
+    match /subscriptionRequests/{requestId} {
+      allow get: if isSuperAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow list: if isSuperAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(requestId) &&
+        isSignedIn() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.status == 'PENDING' &&
+        request.resource.data.method in ['bkash', 'nagad'] &&
+        request.resource.data.amount == 500 &&
+        request.resource.data.trxId is string &&
+        request.resource.data.trxId.size() >= 6 &&
+        request.resource.data.trxId.size() <= 20 &&
+        request.resource.data.senderPhone is string &&
+        request.resource.data.senderPhone.size() >= 10 &&
+        request.resource.data.senderPhone.size() <= 16 &&
+        request.resource.data.month is string &&
+        request.resource.data.month.size() == 7;
+      allow update, delete: if isSuperAdmin();
     }
 
     // Businesses collection
     match /businesses/{businessId} {
       allow create: if isSignedIn() && request.resource.data.ownerId == request.auth.uid;
-      allow get: if isSignedIn() && (
+      allow get: if isSuperAdmin() || (isSignedIn() && (
         resource.data.ownerId == request.auth.uid ||
         exists(/databases/$(database)/documents/businesses/$(businessId)/members/$(request.auth.uid))
-      );
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
-      allow update: if isBusinessOwner(businessId);
-      allow delete: if isBusinessOwner(businessId);
+      ));
+      allow list: if isSuperAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow update: if isBusinessOwner(businessId) || isSuperAdmin();
+      allow delete: if isBusinessOwner(businessId) || isSuperAdmin();
 
       // Business Members subcollection
       match /members/{memberId} {

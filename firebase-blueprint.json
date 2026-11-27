@@ -260,12 +260,43 @@
         "createdAt": { "type": "string" }
       },
       "required": ["id", "businessId", "actorUid", "action"]
+    },
+    "SubscriptionRequest": {
+      "title": "SubscriptionRequest",
+      "description": "Monthly subscription bKash/Nagad payment verification request",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "userPhone": { "type": "string" },
+        "userAddress": { "type": "string" },
+        "businessName": { "type": "string" },
+        "month": { "type": "string" },
+        "monthLabel": { "type": "string" },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "enum": ["bkash", "nagad"] },
+        "receiverNumber": { "type": "string" },
+        "senderPhone": { "type": "string" },
+        "trxId": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+        "rejectionReason": { "type": "string" },
+        "submittedAt": { "type": "string" },
+        "reviewedAt": { "type": "string" },
+        "reviewedBy": { "type": "string" }
+      },
+      "required": ["id", "userId", "month", "amount", "method", "senderPhone", "trxId", "status"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "User profiles"
+    },
+    "/subscriptionRequests/{requestId}": {
+      "schema": "SubscriptionRequest",
+      "description": "Monthly subscription payment submissions and admin approvals"
     },
     "/businesses/{businessId}": {
       "schema": "Business",

@@ -153,6 +153,7 @@
           onSnapshot,
           runTransaction,
           writeBatch,
+          deleteField,
         },
         { getStorage, ref, uploadBytes, getDownloadURL },
       ] = await Promise.all([
@@ -174,12 +175,21 @@
 
       const LOGO_URL = 'https://i.imgur.com/XjO7IJK.jpg';
       const HERO_BG_URL = 'https://i.imgur.com/15btbvY.jpg';
+      const ADMIN_EMAIL = 'dilmohammad9011@gmail.com';
       const BILLING_CONFIG = {
         bkash: '01789637029',
         nagad: '01604703820',
+        monthlyFee: 500,
+        currency: '৳',
         noticeStartDay: 5,
         noticeEndDay: 10,
+        startYear: 2026,
+        startMonth: 12,
       };
+
+      function isSuperAdminUser(user = state?.user) {
+        return Boolean(user?.email && user.email.trim().toLowerCase() === ADMIN_EMAIL);
+      }
 
       const app = initializeApp(firebaseConfig);
       const auth = getAuth(app);
@@ -342,12 +352,24 @@
         authLoading: true,
         user: null,
         userProfile: null,
+        userRequests: [],
+        userUnsubs: [],
         businesses: [],
         currentBusiness: null,
         currentRole: 'owner',
         currentView: 'dashboard',
         mobileSidebarOpen: false,
         fabOpen: false,
+
+        // Super Admin state
+        adminUsers: [],
+        adminBusinesses: [],
+        adminRequests: [],
+        adminUnsubs: [],
+        adminTab: 'pending',
+        adminSearch: '',
+        adminLoading: false,
+        adminError: '',
 
         // Business data
         products: [],
@@ -366,10 +388,14 @@
         // Auth view state
         authTab: 'login',
         authName: '',
+        authPhone: '',
+        authAddress: '',
         authEmail: '',
         authError: null,
         authErrorCode: '',
         pendingDisplayName: '',
+        pendingPhone: '',
+        pendingAddress: '',
         authShowGuide: false,
         authLoadingSubmit: false,
         billingNoticeDismissedMonth: sessionStorage.getItem('dms_billing_dismissed_month') || '',
@@ -381,9 +407,9 @@
           name: '',
           ownerName: '',
           businessType: 'Retailer & Shopkeeper',
-          address: 'Dhaka, Bangladesh',
-          phone: '01789637029',
-          whatsapp: '01789637029',
+          address: '',
+          phone: '',
+          whatsapp: '',
           email: '',
           currency: '৳',
           currencyCode: 'BDT',
@@ -513,44 +539,174 @@
         return err?.message || 'Authentication error occurred.';
       }
 
-      async function syncUserProfile(user, overrideName = '') {
+      async function syncUserProfile(user, extra = {}) {
         if (!user) return null;
+        const opts = typeof extra === 'string' ? { displayName: extra } : (extra || {});
         const path = `users/${user.uid}`;
         try {
           const userRef = doc(db, 'users', user.uid);
           const snap = await getDoc(userRef);
           const existing = snap.exists() ? snap.data() : {};
           const profile = sanitizeForFirestore({
+            id: user.uid,
             uid: user.uid,
             email: user.email || existing.email || '',
-            displayName: overrideName || user.displayName || existing.displayName || (user.email ? user.email.split('@')[0] : 'Business User'),
+            displayName: opts.displayName || user.displayName || existing.displayName || (user.email ? user.email.split('@')[0] : 'Business User'),
+            phone: opts.phone || existing.phone || '',
+            address: opts.address || existing.address || '',
+            businessName: opts.businessName || existing.businessName || '',
+            businessId: opts.businessId || existing.businessId || '',
             photoURL: user.photoURL || existing.photoURL || '',
             memberBusinessIds: Array.isArray(existing.memberBusinessIds) ? existing.memberBusinessIds : [],
             updatedAt: new Date().toISOString(),
             createdAt: existing.createdAt || new Date().toISOString(),
           });
           await setDoc(userRef, profile, { merge: true });
-          return profile;
+          return { ...existing, ...profile };
         } catch (err) {
           handleFirestoreError(err, 'write', path);
           return null;
         }
       }
 
+      function cleanupUserSubs() {
+        (state.userUnsubs || []).forEach((u) => {
+          try { u(); } catch {}
+        });
+        state.userUnsubs = [];
+      }
+
+      function subscribeUserAccount(uid) {
+        cleanupUserSubs();
+        if (!uid) return;
+        const u1 = onSnapshot(
+          doc(db, 'users', uid),
+          (snap) => {
+            if (snap.exists()) {
+              state.userProfile = { id: snap.id, ...snap.data() };
+              scheduleRender();
+            }
+          },
+          (err) => console.warn('User profile listener:', err.message)
+        );
+        const qReq = query(collection(db, 'subscriptionRequests'), where('userId', '==', uid));
+        const u2 = onSnapshot(
+          qReq,
+          (snap) => {
+            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            list.sort((a, b) => String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')));
+            state.userRequests = list;
+            scheduleRender();
+          },
+          (err) => console.warn('User requests listener:', err.message)
+        );
+        state.userUnsubs.push(u1, u2);
+      }
+
+      function cleanupAdminSubs() {
+        (state.adminUnsubs || []).forEach((u) => {
+          try { u(); } catch {}
+        });
+        state.adminUnsubs = [];
+      }
+
+      function subscribeAdminData() {
+        cleanupAdminSubs();
+        if (!isSuperAdminUser()) return;
+        if (!state.user?.emailVerified) {
+          state.adminError = 'email_unverified';
+          state.adminLoading = false;
+          scheduleRender();
+          return;
+        }
+        state.adminError = '';
+        state.adminLoading = true;
+
+        const uUsers = onSnapshot(
+          collection(db, 'users'),
+          (snap) => {
+            const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            rows.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+            state.adminUsers = rows;
+            state.adminLoading = false;
+            scheduleRender();
+          },
+          (err) => {
+            handleFirestoreError(err, 'list', 'users');
+            state.adminError = err.message || 'Permission denied reading users.';
+            state.adminLoading = false;
+            scheduleRender();
+          }
+        );
+
+        const uBiz = onSnapshot(
+          collection(db, 'businesses'),
+          (snap) => {
+            const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            rows.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+            state.adminBusinesses = rows;
+            scheduleRender();
+          },
+          (err) => console.warn('Admin businesses listener:', err.message)
+        );
+
+        const uReqs = onSnapshot(
+          collection(db, 'subscriptionRequests'),
+          (snap) => {
+            const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            rows.sort((a, b) => String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')));
+            state.adminRequests = rows;
+            scheduleRender();
+          },
+          (err) => {
+            handleFirestoreError(err, 'list', 'subscriptionRequests');
+            state.adminError = err.message || 'Permission denied reading payment requests.';
+            scheduleRender();
+          }
+        );
+
+        state.adminUnsubs.push(uUsers, uBiz, uReqs);
+      }
+
       function getBillingStatus() {
         const now = new Date();
         const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const monthNum = now.getMonth() + 1;
+        const month = String(monthNum).padStart(2, '0');
         const monthKey = `${year}-${month}`;
         const day = now.getDate();
         const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-        const paidRecord =
-          state.userProfile?.paidMonths?.[monthKey] ||
-          state.currentBusiness?.paidMonths?.[monthKey] ||
-          null;
-        const isPaid = Boolean(paidRecord);
-        const isNoticeWindow = !isPaid && day >= BILLING_CONFIG.noticeStartDay && day <= BILLING_CONFIG.noticeEndDay;
-        const isLocked = !isPaid && day > BILLING_CONFIG.noticeEndDay;
+
+        const approvedRecord = state.userProfile?.approvedMonths?.[monthKey] || null;
+        const monthReqs = (state.userRequests || [])
+          .filter((r) => r.month === monthKey)
+          .sort((a, b) => String(b.submittedAt || '').localeCompare(String(a.submittedAt || '')));
+        const latestRequest = monthReqs[0] || null;
+
+        const isPaid = Boolean(approvedRecord) || latestRequest?.status === 'APPROVED';
+        const isPending = !isPaid && latestRequest?.status === 'PENDING';
+        const isRejected = !isPaid && latestRequest?.status === 'REJECTED';
+
+        const beforeGlobalStart =
+          year < BILLING_CONFIG.startYear ||
+          (year === BILLING_CONFIG.startYear &&
+            (monthNum < BILLING_CONFIG.startMonth ||
+              (monthNum === BILLING_CONFIG.startMonth && day < BILLING_CONFIG.noticeStartDay)));
+
+        const createdRaw = state.userProfile?.createdAt || state.user?.metadata?.creationTime || '';
+        const createdDate = createdRaw ? new Date(createdRaw) : null;
+        const joinedAfterThisMonthCutoff = Boolean(
+          createdDate &&
+            !isNaN(createdDate.getTime()) &&
+            createdDate.getFullYear() === year &&
+            createdDate.getMonth() + 1 === monthNum &&
+            createdDate.getDate() > BILLING_CONFIG.noticeEndDay
+        );
+
+        const billingActive = !beforeGlobalStart && !joinedAfterThisMonthCutoff;
+        const isNoticeWindow =
+          billingActive && !isPaid && day >= BILLING_CONFIG.noticeStartDay && day <= BILLING_CONFIG.noticeEndDay;
+        const isLocked = billingActive && !isPaid && day > BILLING_CONFIG.noticeEndDay;
         const isDismissed = state.billingNoticeDismissedMonth === monthKey;
         const daysLeft = Math.max(0, BILLING_CONFIG.noticeEndDay - day);
         return {
@@ -558,8 +714,13 @@
           monthLabel,
           day,
           daysLeft,
+          beforeGlobalStart,
+          billingActive,
           isPaid,
-          paidRecord,
+          isPending,
+          isRejected,
+          latestRequest,
+          approvedRecord,
           isNoticeWindow,
           isLocked,
           isDismissed,
@@ -581,11 +742,9 @@
         if (trx === BILLING_CONFIG.bkash || trx === BILLING_CONFIG.nagad || phone === BILLING_CONFIG.bkash || phone === BILLING_CONFIG.nagad) {
           throw new Error('আমাদের রিসিভার নাম্বার নয়, আপনার নিজের সেন্ডার নাম্বার ও আসল Transaction ID দিন।');
         }
-        const used = Array.isArray(state.userProfile?.subscriptionPayments)
-          ? state.userProfile.subscriptionPayments
-          : [];
-        if (used.some((p) => String(p.trxId || '').toUpperCase() === trx)) {
-          throw new Error('এই Transaction ID ইতিমধ্যে ব্যবহার করা হয়েছে। নতুন পেমেন্টের TrxID দিন।');
+        const usedReqs = (state.userRequests || []).filter((r) => r.status !== 'REJECTED');
+        if (usedReqs.some((r) => String(r.trxId || '').toUpperCase() === trx)) {
+          throw new Error('এই Transaction ID ইতিমধ্যে জমা দেয়া হয়েছে। নতুন পেমেন্টের TrxID দিন।');
         }
         return { method, senderPhone: phone, trxId: trx };
       }
@@ -595,57 +754,159 @@
         const clean = validateSubscriptionInputs(method, senderPhone, trxId);
         const status = getBillingStatus();
         const now = new Date().toISOString();
-        const paymentRecord = sanitizeForFirestore({
-          id: 'sub_' + Date.now(),
+        const reqId = 'sub_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+
+        const requestDoc = sanitizeForFirestore({
+          id: reqId,
+          userId: state.user.uid,
+          userEmail: state.user.email || state.userProfile?.email || '',
+          userName: state.userProfile?.displayName || state.user.displayName || 'Business User',
+          userPhone: state.userProfile?.phone || state.currentBusiness?.phone || clean.senderPhone,
+          userAddress: state.userProfile?.address || state.currentBusiness?.address || '',
+          businessName: state.currentBusiness?.name || state.userProfile?.businessName || 'Not created yet',
           month: status.monthKey,
           monthLabel: status.monthLabel,
+          amount: BILLING_CONFIG.monthlyFee,
           method: clean.method,
           receiverNumber: clean.method === 'nagad' ? BILLING_CONFIG.nagad : BILLING_CONFIG.bkash,
           senderPhone: clean.senderPhone,
           trxId: clean.trxId,
-          status: 'SUBMITTED',
-          paidAt: now,
+          status: 'PENDING',
+          rejectionReason: '',
+          submittedAt: now,
         });
 
-        const userRef = doc(db, 'users', state.user.uid);
-        const snap = await getDoc(userRef);
-        const existing = snap.exists() ? snap.data() : {};
-        const nextPaidMonths = { ...(existing.paidMonths || {}), [status.monthKey]: paymentRecord };
-        const nextHistory = [...(Array.isArray(existing.subscriptionPayments) ? existing.subscriptionPayments : []), paymentRecord];
+        await setDoc(doc(db, 'subscriptionRequests', reqId), requestDoc);
 
-        await setDoc(
+        try {
+          await setDoc(
+            doc(db, 'users', state.user.uid),
+            sanitizeForFirestore({
+              phone: state.userProfile?.phone || clean.senderPhone,
+              lastSubmittedPayment: {
+                requestId: reqId,
+                month: status.monthKey,
+                trxId: clean.trxId,
+                method: clean.method,
+                status: 'PENDING',
+                submittedAt: now,
+              },
+              updatedAt: now,
+            }),
+            { merge: true }
+          );
+        } catch (err) {
+          console.warn('Profile payment note skipped:', err.message);
+        }
+
+        state.userRequests = [requestDoc, ...(state.userRequests || []).filter((r) => r.id !== reqId)];
+
+        if (state.currentBusiness && state.currentBusiness.ownerId === state.user.uid) {
+          await logAuditAction(
+            'BILLING',
+            'SUBMIT_SUBSCRIPTION',
+            `Submitted ${status.monthLabel} fee ৳${BILLING_CONFIG.monthlyFee} via ${clean.method.toUpperCase()} (TrxID: ${clean.trxId}) - Pending Admin Approval`,
+            reqId
+          );
+        }
+
+        showToast('আপনার পেমেন্ট ও Transaction ID জমা হয়েছে! অ্যাডমিন অ্যাপ্রুভ করলেই সাথে সাথে সাইট আনলক হবে।', 'info');
+        render();
+        return requestDoc;
+      }
+
+      async function approvePaymentRequest(req) {
+        if (!isSuperAdminUser() || !req?.id || !req?.userId) return;
+        const now = new Date().toISOString();
+        const batch = writeBatch(db);
+        const reqRef = doc(db, 'subscriptionRequests', req.id);
+        const userRef = doc(db, 'users', req.userId);
+
+        batch.update(
+          reqRef,
+          sanitizeForFirestore({
+            status: 'APPROVED',
+            rejectionReason: '',
+            reviewedAt: now,
+            reviewedBy: state.user.email,
+          })
+        );
+        batch.set(
           userRef,
           sanitizeForFirestore({
-            paidMonths: nextPaidMonths,
-            subscriptionPayments: nextHistory,
+            approvedMonths: {
+              [req.month]: {
+                requestId: req.id,
+                month: req.month,
+                monthLabel: req.monthLabel || req.month,
+                amount: req.amount || BILLING_CONFIG.monthlyFee,
+                method: req.method,
+                senderPhone: req.senderPhone,
+                trxId: req.trxId,
+                approvedAt: now,
+                approvedBy: state.user.email,
+              },
+            },
             updatedAt: now,
           }),
           { merge: true }
         );
+        await batch.commit();
+        showToast(`${req.userName || req.userEmail} এর পেমেন্ট অ্যাপ্রুভ হয়েছে! ইউজার এখন সাইট ব্যবহার করতে পারবে।`);
+      }
 
-        state.userProfile = {
-          ...(state.userProfile || {}),
-          paidMonths: nextPaidMonths,
-          subscriptionPayments: nextHistory,
-        };
+      async function rejectPaymentRequest(req, reason = 'ভুল Transaction ID বা পেমেন্ট পাওয়া যায়নি') {
+        if (!isSuperAdminUser() || !req?.id || !req?.userId) return;
+        const now = new Date().toISOString();
+        await updateDoc(
+          doc(db, 'subscriptionRequests', req.id),
+          sanitizeForFirestore({
+            status: 'REJECTED',
+            rejectionReason: reason.trim() || 'ভুল Transaction ID বা পেমেন্ট পাওয়া যায়নি',
+            reviewedAt: now,
+            reviewedBy: state.user.email,
+          })
+        );
+        try {
+          const userRef = doc(db, 'users', req.userId);
+          const uSnap = await getDoc(userRef);
+          if (uSnap.exists() && uSnap.data()?.approvedMonths?.[req.month]?.requestId === req.id) {
+            await updateDoc(userRef, {
+              ['approvedMonths.' + req.month]: deleteField(),
+              updatedAt: now,
+            });
+          }
+        } catch {}
+        showToast('পেমেন্ট রিকোয়েস্ট বাতিল (Reject) করা হয়েছে।', 'info');
+      }
 
-        if (state.currentBusiness && state.currentBusiness.ownerId === state.user.uid) {
-          try {
-            const bizPaidMonths = { ...(state.currentBusiness.paidMonths || {}), [status.monthKey]: paymentRecord };
-            await updateDoc(
-              doc(db, 'businesses', state.currentBusiness.id),
-              sanitizeForFirestore({ paidMonths: bizPaidMonths, lastPaidMonth: status.monthKey, updatedAt: now })
-            );
-            state.currentBusiness = { ...state.currentBusiness, paidMonths: bizPaidMonths, lastPaidMonth: status.monthKey };
-            await logAuditAction('BILLING', 'SUBSCRIPTION_PAYMENT', `Paid ${status.monthLabel} via ${clean.method.toUpperCase()} (TrxID: ${clean.trxId})`, paymentRecord.id);
-          } catch {}
-        }
-
-        state.billingNoticeDismissedMonth = '';
-        sessionStorage.removeItem('dms_billing_dismissed_month');
-        showToast('পেমেন্ট সফলভাবে ভেরিফাই ও সাবমিট হয়েছে! আপনি এখন সাইট ব্যবহার করতে পারবেন।');
-        render();
-        return paymentRecord;
+      async function manualGrantMonthAccess(userObj) {
+        if (!isSuperAdminUser() || !userObj) return;
+        const targetUid = userObj.uid || userObj.id;
+        if (!targetUid) return;
+        const billing = getBillingStatus();
+        const now = new Date().toISOString();
+        await setDoc(
+          doc(db, 'users', targetUid),
+          sanitizeForFirestore({
+            approvedMonths: {
+              [billing.monthKey]: {
+                requestId: 'manual_' + Date.now(),
+                month: billing.monthKey,
+                monthLabel: billing.monthLabel,
+                amount: BILLING_CONFIG.monthlyFee,
+                method: 'manual',
+                senderPhone: userObj.phone || '',
+                trxId: 'ADMIN_MANUAL',
+                approvedAt: now,
+                approvedBy: state.user.email,
+              },
+            },
+            updatedAt: now,
+          }),
+          { merge: true }
+        );
+        showToast(`${userObj.displayName || userObj.email} কে ${billing.monthLabel} মাসের অ্যাক্সেস দেয়া হয়েছে!`);
       }
 
       function cleanupBusinessSubs() {
@@ -802,12 +1063,18 @@
         }
       }
 
-      async function signUpWithEmail(name, email, password) {
+      async function signUpWithEmail(name, email, password, phone = '', address = '') {
         const cleanName = name.trim();
         const cleanEmail = email.trim();
+        const cleanPhone = String(phone || '').trim();
+        const cleanAddress = String(address || '').trim();
         state.authName = cleanName;
         state.authEmail = cleanEmail;
+        state.authPhone = cleanPhone;
+        state.authAddress = cleanAddress;
         state.pendingDisplayName = cleanName;
+        state.pendingPhone = cleanPhone;
+        state.pendingAddress = cleanAddress;
         state.authLoadingSubmit = true;
         state.authError = null;
         state.authErrorCode = '';
@@ -817,11 +1084,19 @@
           if (cleanName) {
             await updateProfile(cred.user, { displayName: cleanName });
           }
-          state.userProfile = await syncUserProfile(cred.user, cleanName);
+          state.userProfile = await syncUserProfile(cred.user, {
+            displayName: cleanName,
+            phone: cleanPhone,
+            address: cleanAddress,
+          });
           state.pendingDisplayName = '';
+          state.pendingPhone = '';
+          state.pendingAddress = '';
           showToast('Account created successfully!');
         } catch (err) {
           state.pendingDisplayName = '';
+          state.pendingPhone = '';
+          state.pendingAddress = '';
           state.authErrorCode = err?.code || '';
           state.authError = formatAuthError(err);
           state.authLoadingSubmit = false;
@@ -873,7 +1148,14 @@
 
       async function signOutUser() {
         cleanupBusinessSubs();
+        cleanupUserSubs();
+        cleanupAdminSubs();
         resetBusinessData();
+        state.userRequests = [];
+        state.adminUsers = [];
+        state.adminBusinesses = [];
+        state.adminRequests = [];
+        state.adminError = '';
         state.currentBusiness = null;
         state.businesses = [];
         await signOut(auth);
@@ -930,6 +1212,22 @@
         });
         await batch.commit();
 
+        // Sync phone, address, and business identity to user profile for Admin Directory visibility
+        try {
+          await setDoc(
+            doc(db, 'users', state.user.uid),
+            sanitizeForFirestore({
+              displayName: bizDoc.ownerName,
+              phone: bizDoc.phone || state.userProfile?.phone || '',
+              address: bizDoc.address || state.userProfile?.address || '',
+              businessName: bizDoc.name,
+              businessId: bizId,
+              updatedAt: now,
+            }),
+            { merge: true }
+          );
+        } catch {}
+
         state.businesses = [...state.businesses, bizDoc];
         selectBusiness(bizDoc);
         state.currentView = 'dashboard';
@@ -944,6 +1242,21 @@
         await updateDoc(doc(db, 'businesses', state.currentBusiness.id), clean);
         state.currentBusiness = { ...state.currentBusiness, ...clean };
         state.businesses = state.businesses.map((b) => (b.id === state.currentBusiness.id ? state.currentBusiness : b));
+        if (state.user && state.currentBusiness.ownerId === state.user.uid) {
+          try {
+            await setDoc(
+              doc(db, 'users', state.user.uid),
+              sanitizeForFirestore({
+                displayName: clean.ownerName || state.userProfile?.displayName || '',
+                phone: clean.phone || state.userProfile?.phone || '',
+                address: clean.address || state.userProfile?.address || '',
+                businessName: clean.name || state.currentBusiness.name,
+                updatedAt: clean.updatedAt,
+              }),
+              { merge: true }
+            );
+          } catch {}
+        }
         await logAuditAction('SETTINGS', 'UPDATE_BUSINESS', 'Updated business profile & configuration');
         showToast('Business settings saved!');
         render();
@@ -1724,6 +2037,16 @@
                         ? `<div>
                             <label class="block text-xs font-semibold text-slate-700 mb-1">Full Name</label>
                             <input type="text" id="auth-name-input" name="name" required value="${esc(state.authName)}" placeholder="e.g. DIL Mohammad Sohel" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-sm focus:outline-none focus:border-sky-500 focus:bg-white" />
+                          </div>
+                          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                              <label class="block text-xs font-semibold text-slate-700 mb-1">Mobile Number *</label>
+                              <input type="tel" id="auth-phone-input" name="phone" required value="${esc(state.authPhone)}" placeholder="01XXXXXXXXX" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-sm focus:outline-none focus:border-sky-500 focus:bg-white" />
+                            </div>
+                            <div>
+                              <label class="block text-xs font-semibold text-slate-700 mb-1">Address / Area *</label>
+                              <input type="text" id="auth-address-input" name="address" required value="${esc(state.authAddress)}" placeholder="Shop/City Address" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-sm focus:outline-none focus:border-sky-500 focus:bg-white" />
+                            </div>
                           </div>`
                         : ''
                     }
@@ -1832,11 +2155,11 @@
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <div>
                             <label class="block text-xs font-bold text-slate-700 mb-1">Phone Number *</label>
-                            <input name="phone" required value="${esc(f.phone)}" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-sky-500 focus:bg-white" />
+                            <input name="phone" required value="${esc(f.phone || state.userProfile?.phone || '')}" placeholder="01XXXXXXXXX" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-sky-500 focus:bg-white" />
                           </div>
                           <div>
                             <label class="block text-xs font-bold text-slate-700 mb-1">WhatsApp Number</label>
-                            <input name="whatsapp" value="${esc(f.whatsapp)}" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-sky-500 focus:bg-white" />
+                            <input name="whatsapp" value="${esc(f.whatsapp || state.userProfile?.phone || '')}" placeholder="01XXXXXXXXX" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-sky-500 focus:bg-white" />
                           </div>
                         </div>
                         <div>
@@ -1845,7 +2168,7 @@
                         </div>
                         <div>
                           <label class="block text-xs font-bold text-slate-700 mb-1">Full Address</label>
-                          <textarea name="address" rows="2" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-sky-500 focus:bg-white">${esc(f.address)}</textarea>
+                          <textarea name="address" rows="2" placeholder="Shop / Market / District" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-sky-500 focus:bg-white">${esc(f.address || state.userProfile?.address || '')}</textarea>
                         </div>
                       </div>`
                     : `<div class="space-y-4">
@@ -1943,29 +2266,56 @@
 
         const billing = getBillingStatus();
         const paymentBannerHtml = billing.isNoticeWindow && !billing.isDismissed
-          ? `<div id="billing-notice-banner" class="mb-6 rounded-2xl bg-gradient-to-r from-amber-50 via-white to-sky-50 border border-amber-300 shadow-md p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden animate-fade-in">
-              <div class="flex items-start gap-3.5 cursor-pointer flex-1" id="btn-banner-open-pay">
-                <div class="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 text-amber-700 flex items-center justify-center shrink-0">
-                  <i data-lucide="bell-ring" class="w-5 h-5"></i>
-                </div>
-                <div>
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span class="px-2 py-0.5 rounded-md bg-amber-500 text-white text-[10px] font-extrabold uppercase">Monthly Payment Notice (৫–১০ তারিখ)</span>
-                    <span class="text-[11px] font-bold text-rose-600">${billing.daysLeft === 0 ? 'আজই শেষ দিন (১০ তারিখ)!' : `বাকি আছে মাত্র ${billing.daysLeft} দিন`}</span>
+          ? billing.isPending
+            ? `<div id="billing-notice-banner" class="mb-6 rounded-2xl bg-gradient-to-r from-sky-50 via-white to-emerald-50 border border-sky-300 shadow-md p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden animate-fade-in">
+                <div class="flex items-start gap-3.5 flex-1 cursor-pointer" id="btn-banner-open-pay">
+                  <div class="w-11 h-11 rounded-2xl bg-sky-100 border border-sky-300 text-sky-700 flex items-center justify-center shrink-0">
+                    <i data-lucide="clock" class="w-5 h-5"></i>
                   </div>
-                  <h3 class="text-sm font-extrabold text-slate-900 mt-1">${esc(billing.monthLabel)} মাসের পেমেন্ট সম্পন্ন করতে এখানে ক্লিক করুন</h3>
-                  <p class="text-xs text-slate-600 mt-0.5">প্রতি মাসের ৫ থেকে ১০ তারিখের মধ্যে bKash বা Nagad-এ Send Money করে Transaction Number সাবমিট করুন। ১০ তারিখের মধ্যে পেমেন্ট না করলে সাইট বন্ধ হয়ে যাবে।</p>
+                  <div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="px-2 py-0.5 rounded-md bg-sky-600 text-white text-[10px] font-extrabold uppercase">Pending Admin Approval</span>
+                      <span class="px-2 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-extrabold">৳৫০০ • ${esc(billing.latestRequest?.method?.toUpperCase() || '')}</span>
+                      <span class="text-[11px] font-mono font-bold text-slate-700">TrxID: ${esc(billing.latestRequest?.trxId || '')}</span>
+                    </div>
+                    <h3 class="text-sm font-extrabold text-slate-900 mt-1">${esc(billing.monthLabel)} মাসের পেমেন্ট অ্যাডমিন যাচাইয়ের জন্য অপেক্ষমাণ আছে</h3>
+                    <p class="text-xs text-slate-600 mt-0.5">অ্যাডমিন আপনার Transaction ID যাচাই করে অ্যাপ্রুভ করলেই এই নোটিশ চলে যাবে এবং অ্যাক্সেস কনফার্ম হবে।</p>
+                  </div>
                 </div>
-              </div>
-              <div class="flex flex-wrap items-center gap-2 shrink-0">
-                <button type="button" id="btn-banner-pay-now" class="px-4 py-2.5 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white text-xs font-bold shadow-sm">
-                  পেমেন্ট করুন (bKash / Nagad)
-                </button>
-                <button type="button" id="btn-banner-skip" class="px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-semibold">
-                  এড়িয়ে যান (Skip)
-                </button>
-              </div>
-            </div>`
+                <div class="flex flex-wrap items-center gap-2 shrink-0">
+                  <button type="button" id="btn-banner-pay-now" class="px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shadow-sm">
+                    স্ট্যাটাস দেখুন
+                  </button>
+                  <button type="button" id="btn-banner-skip" class="px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-semibold">
+                    এড়িয়ে যান (Skip)
+                  </button>
+                </div>
+              </div>`
+            : `<div id="billing-notice-banner" class="mb-6 rounded-2xl bg-gradient-to-r from-amber-50 via-white to-sky-50 border border-amber-300 shadow-md p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden animate-fade-in">
+                <div class="flex items-start gap-3.5 cursor-pointer flex-1" id="btn-banner-open-pay">
+                  <div class="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 text-amber-700 flex items-center justify-center shrink-0">
+                    <i data-lucide="bell-ring" class="w-5 h-5"></i>
+                  </div>
+                  <div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="px-2 py-0.5 rounded-md bg-amber-500 text-white text-[10px] font-extrabold uppercase">Monthly Payment Notice (৫–১০ তারিখ)</span>
+                      <span class="px-2 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-extrabold">ফি: ৫০০ টাকা (৳500)</span>
+                      <span class="text-[11px] font-bold text-rose-600">${billing.daysLeft === 0 ? 'আজই শেষ দিন (১০ তারিখ)!' : `বাকি আছে মাত্র ${billing.daysLeft} দিন`}</span>
+                    </div>
+                    <h3 class="text-sm font-extrabold text-slate-900 mt-1">${esc(billing.monthLabel)} মাসের সাবস্ক্রিপশন ফি ৫০০ টাকা (৳500) পেমেন্ট করতে এখানে ক্লিক করুন</h3>
+                    <p class="text-xs text-slate-600 mt-0.5">প্রতি মাসের ৫ থেকে ১০ তারিখের মধ্যে bKash বা Nagad-এ <strong>৫০০ টাকা (৳500)</strong> Send Money করে Transaction Number সাবমিট করুন। অ্যাডমিন অ্যাপ্রুভ করলেই অ্যাক্সেস চালু থাকবে, ১০ তারিখের মধ্যে পেমেন্ট না করলে সাইট বন্ধ হয়ে যাবে।</p>
+                    ${billing.isRejected ? `<p class="text-xs font-bold text-rose-700 mt-1">আগের রিকোয়েস্ট বাতিল হয়েছে: ${esc(billing.latestRequest?.rejectionReason || 'ভুল TrxID')}। অনুগ্রহ করে সঠিক TrxID দিয়ে আবার সাবমিট করুন।</p>` : ''}
+                  </div>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 shrink-0">
+                  <button type="button" id="btn-banner-pay-now" class="px-4 py-2.5 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white text-xs font-bold shadow-sm">
+                    পেমেন্ট করুন • ৳৫০০ (bKash / Nagad)
+                  </button>
+                  <button type="button" id="btn-banner-skip" class="px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-semibold">
+                    এড়িয়ে যান (Skip)
+                  </button>
+                </div>
+              </div>`
           : '';
 
         return `
@@ -1980,7 +2330,7 @@
               </div>
               <div class="flex items-center gap-3">
                 ${
-                  !billing.isPaid && billing.day >= BILLING_CONFIG.noticeStartDay
+                  !billing.isPaid && billing.billingActive && billing.day >= BILLING_CONFIG.noticeStartDay
                     ? `<button type="button" id="btn-top-pay-pill" class="px-2 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold hover:bg-amber-400">Monthly Payment Due</button>`
                     : ''
                 }
@@ -2040,7 +2390,7 @@
                 <nav class="space-y-1">${navLinksHtml}</nav>
                 <div class="pt-4 mt-4 border-t border-slate-100 space-y-2">
                   ${
-                    !billing.isPaid && billing.day >= BILLING_CONFIG.noticeStartDay
+                    !billing.isPaid && billing.billingActive && billing.day >= BILLING_CONFIG.noticeStartDay
                       ? `<button type="button" id="btn-sidebar-pay" class="w-full p-2.5 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-xs font-bold text-left flex items-center justify-between">
                           <span>Pay Monthly Bill</span>
                           <span class="px-1.5 py-0.5 rounded bg-amber-500 text-white text-[10px]">5-10</span>
@@ -3298,7 +3648,11 @@
       function renderSettingsView() {
         const b = state.currentBusiness;
         const billing = getBillingStatus();
-        const history = Array.isArray(state.userProfile?.subscriptionPayments) ? [...state.userProfile.subscriptionPayments].reverse() : [];
+        const history = state.userRequests && state.userRequests.length > 0
+          ? state.userRequests
+          : Array.isArray(state.userProfile?.subscriptionPayments)
+          ? [...state.userProfile.subscriptionPayments].reverse()
+          : [];
         return `
           <div class="space-y-6 animate-fade-in max-w-4xl">
             <div>
@@ -3337,12 +3691,24 @@
             <div class="dms-card rounded-2xl p-6 space-y-4 text-xs">
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h2 class="text-sm font-extrabold text-slate-900">Monthly Subscription & Payment History</h2>
-                  <p class="text-slate-500">Current Month (${esc(billing.monthLabel)}): <strong class="${billing.isPaid ? 'text-emerald-700' : 'text-amber-700'}">${billing.isPaid ? 'PAID & ACTIVE' : 'PAYMENT PENDING'}</strong></p>
+                  <h2 class="text-sm font-extrabold text-slate-900">Monthly Subscription (৳500 / মাস) & Payment History</h2>
+                  <p class="text-slate-500">
+                    ${
+                      billing.beforeGlobalStart
+                        ? `Next Billing Cycle: <strong>December 5–10, 2026 (৳500)</strong> — <strong class="text-emerald-700">FREE ACCESS UNTIL DEC 5</strong>`
+                        : !billing.billingActive
+                        ? `Current Month (${esc(billing.monthLabel)}): <strong class="text-emerald-700">NEW ACCOUNT GRACE PERIOD (Starts Next 5th)</strong>`
+                        : billing.isPaid
+                        ? `Current Month (${esc(billing.monthLabel)}): <strong class="text-emerald-700">APPROVED & ACTIVE</strong>`
+                        : billing.isPending
+                        ? `Current Month (${esc(billing.monthLabel)}): <strong class="text-sky-700">PENDING ADMIN APPROVAL</strong>`
+                        : `Current Month (${esc(billing.monthLabel)}): <strong class="text-amber-700">PAYMENT DUE (৳500)</strong>`
+                    }
+                  </p>
                 </div>
                 ${
-                  !billing.isPaid
-                    ? `<button type="button" id="btn-settings-pay-now" class="px-4 py-2 rounded-xl bg-pink-600 hover:bg-pink-700 text-white font-bold">Pay Monthly Fee (bKash / Nagad)</button>`
+                  !billing.isPaid && billing.billingActive
+                    ? `<button type="button" id="btn-settings-pay-now" class="px-4 py-2 rounded-xl bg-pink-600 hover:bg-pink-700 text-white font-bold">${billing.isPending ? 'View Pending Status' : 'Pay Monthly Fee ৳500 (bKash / Nagad)'}</button>`
                     : ''
                 }
               </div>
@@ -3352,10 +3718,18 @@
                   : `<div class="overflow-x-auto">
                       <table class="w-full text-left">
                         <thead class="bg-slate-50 text-[10px] uppercase text-slate-600">
-                          <tr><th class="p-2.5">Month</th><th class="p-2.5">Method</th><th class="p-2.5">Sender</th><th class="p-2.5">TrxID</th><th class="p-2.5">Submitted</th></tr>
+                          <tr><th class="p-2.5">Month</th><th class="p-2.5">Amount</th><th class="p-2.5">Method</th><th class="p-2.5">Sender</th><th class="p-2.5">TrxID</th><th class="p-2.5">Status</th><th class="p-2.5">Submitted</th></tr>
                         </thead>
                         <tbody class="divide-y divide-slate-100">
-                          ${history.map((p) => `<tr><td class="p-2.5 font-bold">${esc(p.monthLabel || p.month)}</td><td class="p-2.5 uppercase font-bold text-pink-700">${esc(p.method)}</td><td class="p-2.5">${esc(p.senderPhone)}</td><td class="p-2.5 font-mono font-bold text-slate-900">${esc(p.trxId)}</td><td class="p-2.5 text-slate-500">${esc((p.paidAt || '').slice(0, 10))}</td></tr>`).join('')}
+                          ${history.map((p) => {
+                            const st = String(p.status || 'PENDING').toUpperCase();
+                            const badge = st === 'APPROVED'
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : st === 'REJECTED'
+                              ? 'bg-rose-100 text-rose-700'
+                              : 'bg-sky-100 text-sky-700';
+                            return `<tr><td class="p-2.5 font-bold">${esc(p.monthLabel || p.month)}</td><td class="p-2.5 font-extrabold text-emerald-700">৳${p.amount || BILLING_CONFIG.monthlyFee}</td><td class="p-2.5 uppercase font-bold text-pink-700">${esc(p.method)}</td><td class="p-2.5">${esc(p.senderPhone)}</td><td class="p-2.5 font-mono font-bold text-slate-900">${esc(p.trxId)}</td><td class="p-2.5"><span class="px-2 py-0.5 rounded-md font-bold text-[10px] ${badge}">${esc(st)}</span></td><td class="p-2.5 text-slate-500">${esc((p.submittedAt || p.paidAt || '').slice(0, 10))}</td></tr>`;
+                          }).join('')}
                         </tbody>
                       </table>
                     </div>`
@@ -3695,11 +4069,56 @@
       function renderSubscriptionPaymentBody(isHardLock = false) {
         const billing = getBillingStatus();
         const sel = state.billingSelectedMethod || 'bkash';
+
+        if (billing.isPending && billing.latestRequest) {
+          const r = billing.latestRequest;
+          return `
+            <div class="space-y-4 text-xs">
+              <div class="p-5 rounded-2xl bg-sky-50 border border-sky-200 text-slate-800 space-y-3">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="px-2.5 py-1 rounded-lg bg-sky-600 text-white font-extrabold text-[11px] uppercase">Pending Admin Approval</span>
+                  <span class="font-extrabold text-emerald-700 text-sm">৳${r.amount || BILLING_CONFIG.monthlyFee}</span>
+                </div>
+                <h3 class="text-base font-extrabold text-slate-900">আপনার পেমেন্ট যাচাইয়ের জন্য অপেক্ষমাণ আছে</h3>
+                <p class="leading-relaxed text-slate-600">
+                  অ্যাডমিন আপনার পাঠানো Transaction ID যাচাই করে <strong>Approve</strong> করলেই সাথে সাথে আপনার সাইট অটোমেটিক আনলক হয়ে যাবে। অনুগ্রহ করে অপেক্ষা করুন অথবা জরুরি প্রয়োজনে WhatsApp-এ যোগাযোগ করুন।
+                </p>
+                <div class="grid grid-cols-2 gap-2.5 p-3 rounded-xl bg-white border border-sky-200 text-[11px]">
+                  <div><span class="text-slate-400 block">Payment Method</span><strong class="uppercase text-pink-700">${esc(r.method)}</strong></div>
+                  <div><span class="text-slate-400 block">Sender Number</span><strong class="font-mono text-slate-900">${esc(r.senderPhone)}</strong></div>
+                  <div><span class="text-slate-400 block">Transaction ID</span><strong class="font-mono text-sky-700">${esc(r.trxId)}</strong></div>
+                  <div><span class="text-slate-400 block">Submitted Date</span><strong class="text-slate-700">${esc((r.submittedAt || '').replace('T', ' ').slice(0, 16))}</strong></div>
+                </div>
+              </div>
+              <a
+                href="https://wa.me/8801789637029?text=${encodeURIComponent(`Hello Admin, please approve my DMS Solution payment. Email: ${state.user?.email || ''}, TrxID: ${r.trxId}, Amount: 500`)}"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="block w-full text-center py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-md"
+              >
+                অ্যাডমিনকে WhatsApp-এ জানান (01789637029)
+              </a>
+            </div>
+          `;
+        }
+
         return `
           <div class="space-y-4 text-xs">
-            <div class="p-4 rounded-2xl ${isHardLock ? 'bg-rose-50 border-rose-200 text-rose-900' : 'bg-sky-50 border-sky-200 text-slate-800'} border space-y-1">
-              <div class="font-extrabold text-sm">${isHardLock ? '১০ তারিখ অতিক্রম হয়েছে — পেমেন্ট করে সাইট আনলক করুন' : `${esc(billing.monthLabel)} মাসের পেমেন্ট (Send Money)`}</div>
-              <p class="leading-relaxed">নিচের <strong>bKash</strong> অথবা <strong>Nagad</strong> পার্সোনাল নাম্বার কপি করে <strong>Send Money</strong> করুন এবং সঠিক <strong>Transaction ID (TrxID)</strong> বসিয়ে সাবমিট করলেই সাথে সাথে সাইট ব্যবহার করতে পারবেন।</p>
+            ${
+              billing.isRejected && billing.latestRequest
+                ? `<div class="p-3.5 rounded-2xl bg-rose-50 border border-rose-300 text-rose-900 space-y-1">
+                    <div class="font-extrabold">আগের Transaction ID টি বাতিল (Rejected) করা হয়েছে</div>
+                    <p>কারণ: <strong>${esc(billing.latestRequest.rejectionReason || 'সঠিক TrxID পাওয়া যায়নি')}</strong></p>
+                    <p class="text-[11px]">সঠিক Transaction ID দিয়ে নিচে পুনরায় সাবমিট করুন।</p>
+                  </div>`
+                : ''
+            }
+            <div class="p-4 rounded-2xl ${isHardLock ? 'bg-rose-50 border-rose-200 text-rose-900' : 'bg-sky-50 border-sky-200 text-slate-800'} border space-y-1.5">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="font-extrabold text-sm">${isHardLock ? '১০ তারিখ অতিক্রম হয়েছে — পেমেন্ট করে সাইট আনলক করুন' : `${esc(billing.monthLabel)} মাসের পেমেন্ট (Send Money)`}</div>
+                <span class="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-extrabold text-xs">মাসিক ফি: ৫০০ টাকা (৳500)</span>
+              </div>
+              <p class="leading-relaxed">নিচের <strong>bKash</strong> অথবা <strong>Nagad</strong> পার্সোনাল নাম্বার কপি করে <strong>৫০০ টাকা (৳500) Send Money</strong> করুন এবং সঠিক <strong>Transaction ID (TrxID)</strong> বসিয়ে সাবমিট করুন। অ্যাডমিন যাচাই করে <strong>Approve</strong> করলেই আপনি সাইট ব্যবহার করতে পারবেন।</p>
             </div>
 
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -3733,7 +4152,7 @@
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label class="block font-bold text-slate-700 mb-1">যে নাম্বার থেকে টাকা পাঠিয়েছেন *</label>
-                  <input name="senderPhone" required placeholder="017XXXXXXXX" maxlength="14" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white focus:border-sky-500 text-sm font-semibold" />
+                  <input name="senderPhone" required value="${esc(state.userProfile?.phone || '')}" placeholder="017XXXXXXXX" maxlength="14" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white focus:border-sky-500 text-sm font-semibold" />
                 </div>
                 <div>
                   <label class="block font-bold text-slate-700 mb-1">Transaction ID (TrxID) *</label>
@@ -3742,7 +4161,7 @@
               </div>
               <div id="sub-pay-err" class="hidden p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 font-semibold"></div>
               <button type="submit" id="sub-pay-submit" class="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg">
-                সাবমিট ও সাইট আনলক করুন (Submit & Unlock)
+                সাবমিট করুন (Submit for Admin Approval)
               </button>
             </form>
           </div>
@@ -3786,7 +4205,7 @@
             const errBox = container.querySelector('#sub-pay-err');
             const submitBtn = container.querySelector('#sub-pay-submit');
             if (errBox) errBox.classList.add('hidden');
-            if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Verifying & Saving...'; }
+            if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Submitting...'; }
             try {
               await submitSubscriptionPayment({
                 method: fd.get('method').toString(),
@@ -3799,7 +4218,7 @@
                 errBox.textContent = err.message || 'Invalid transaction details';
                 errBox.classList.remove('hidden');
               }
-              if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'সাবমিট ও সাইট আনলক করুন (Submit & Unlock)'; }
+              if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'সাবমিট করুন (Submit for Admin Approval)'; }
             }
           };
         }
@@ -3820,8 +4239,8 @@
           <div class="min-h-screen bg-[#f8fbff] flex flex-col">
             <div class="bg-slate-900 text-white px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-2">
               <div class="flex items-center gap-2">
-                <span class="w-2 h-2 rounded-full bg-rose-400"></span>
-                <span class="font-bold">DMS Solution — Subscription Required</span>
+                <span class="w-2 h-2 rounded-full ${billing.isPending ? 'bg-sky-400' : 'bg-rose-400'}"></span>
+                <span class="font-bold">DMS Solution — ${billing.isPending ? 'Waiting for Admin Approval' : 'Subscription Required'}</span>
               </div>
               <div class="flex items-center gap-3">
                 <a href="https://wa.me/8801789637029" target="_blank" rel="noopener noreferrer" class="text-emerald-400 font-bold">WhatsApp Support: 01789637029</a>
@@ -3829,12 +4248,12 @@
               </div>
             </div>
             <div class="flex-1 flex items-center justify-center p-4 sm:p-8">
-              <div class="w-full max-w-xl bg-white border border-rose-200 rounded-3xl shadow-2xl p-6 sm:p-8 space-y-5 animate-fade-in">
+              <div class="w-full max-w-xl bg-white ${billing.isPending ? 'border-sky-200' : 'border-rose-200'} border rounded-3xl shadow-2xl p-6 sm:p-8 space-y-5 animate-fade-in">
                 <div class="flex items-center gap-3">
                   <img src="${LOGO_URL}" referrerpolicy="no-referrer" class="w-12 h-12 rounded-xl object-contain bg-white p-1 border border-sky-200" />
                   <div>
-                    <span class="px-2 py-0.5 rounded-md bg-rose-100 text-rose-700 text-[10px] font-extrabold uppercase">Access Locked (${esc(billing.monthLabel)})</span>
-                    <h1 class="text-xl font-extrabold text-slate-900 mt-0.5">মাসিক পেমেন্ট সম্পন্ন করুন</h1>
+                    <span class="px-2 py-0.5 rounded-md ${billing.isPending ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'} text-[10px] font-extrabold uppercase">${billing.isPending ? 'Pending Approval' : 'Access Locked'} (${esc(billing.monthLabel)})</span>
+                    <h1 class="text-xl font-extrabold text-slate-900 mt-0.5">${billing.isPending ? 'অ্যাডমিন অ্যাপ্রুভালের জন্য অপেক্ষমাণ' : 'মাসিক পেমেন্ট সম্পন্ন করুন'}</h1>
                   </div>
                 </div>
                 <div id="lock-paywall-body">${renderSubscriptionPaymentBody(true)}</div>
@@ -3844,23 +4263,517 @@
         `;
       }
 
+      function openRejectReasonModal(req) {
+        const modal = openModal(
+          'Reject Payment Request',
+          `
+            <form id="reject-reason-form" class="space-y-4 text-xs">
+              <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                <div><strong>User:</strong> ${esc(req.userName)} (${esc(req.userEmail)})</div>
+                <div><strong>TrxID:</strong> <span class="font-mono font-bold text-rose-700">${esc(req.trxId)}</span> • <strong>Method:</strong> ${esc((req.method || '').toUpperCase())}</div>
+              </div>
+              <div>
+                <label class="block font-bold text-slate-700 mb-1">Rejection Reason (ইউজারকে দেখানো হবে)</label>
+                <input name="reason" required value="ভুল Transaction ID বা পেমেন্ট পাওয়া যায়নি" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+              </div>
+              <div class="flex justify-end gap-2">
+                <button type="button" class="modal-cancel px-4 py-2 rounded-xl border border-slate-300 font-bold text-slate-600">Cancel</button>
+                <button type="submit" class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold">Confirm Reject</button>
+              </div>
+            </form>
+          `
+        );
+        modal.querySelector('.modal-cancel').onclick = () => modal.remove();
+        modal.querySelector('#reject-reason-form').onsubmit = async (e) => {
+          e.preventDefault();
+          const reason = new FormData(e.target).get('reason').toString();
+          await rejectPaymentRequest(req, reason);
+          modal.remove();
+        };
+      }
+
+      function renderAdminPanelView() {
+        const billing = getBillingStatus();
+        const q = (state.adminSearch || '').trim().toLowerCase();
+        const bizByOwner = new Map();
+        (state.adminBusinesses || []).forEach((b) => {
+          const arr = bizByOwner.get(b.ownerId) || [];
+          arr.push(b);
+          bizByOwner.set(b.ownerId, arr);
+        });
+
+        const enrichUser = (u) => {
+          const uid = u.uid || u.id;
+          const ownedBiz = bizByOwner.get(uid) || [];
+          const primaryBiz = ownedBiz[0] || null;
+          return {
+            ...u,
+            uid,
+            phone: u.phone || primaryBiz?.phone || primaryBiz?.whatsapp || '',
+            address: u.address || primaryBiz?.address || '',
+            businessName: u.businessName || primaryBiz?.name || '',
+            businessType: u.businessType || primaryBiz?.businessType || '',
+            businessCount: ownedBiz.length,
+            businesses: ownedBiz,
+          };
+        };
+
+        const usersList = (state.adminUsers || [])
+          .filter((u) => (u.email || '').toLowerCase() !== ADMIN_EMAIL)
+          .map(enrichUser);
+
+        const userById = new Map(usersList.map((u) => [u.uid, u]));
+        const allReqs = (state.adminRequests || []).map((r) => {
+          const u = userById.get(r.userId);
+          return {
+            ...r,
+            userPhone: r.userPhone || u?.phone || r.senderPhone || '',
+            userAddress: r.userAddress || u?.address || '',
+            businessName: r.businessName || u?.businessName || '',
+          };
+        });
+
+        const pendingReqs = allReqs.filter((r) => r.status === 'PENDING');
+        const approvedReqs = allReqs.filter((r) => r.status === 'APPROVED');
+        const rejectedReqs = allReqs.filter((r) => r.status === 'REJECTED');
+        const totalRevenue = approvedReqs.reduce((s, r) => s + Number(r.amount || BILLING_CONFIG.monthlyFee), 0);
+
+        const matchReq = (r) => {
+          if (!q) return true;
+          return [r.userName, r.userEmail, r.userPhone, r.senderPhone, r.userAddress, r.businessName, r.trxId, r.monthLabel]
+            .some((v) => String(v || '').toLowerCase().includes(q));
+        };
+        const matchUser = (u) => {
+          if (!q) return true;
+          return [u.displayName, u.email, u.phone, u.address, u.businessName, u.businessType]
+            .some((v) => String(v || '').toLowerCase().includes(q));
+        };
+
+        const filteredReqs =
+          state.adminTab === 'pending'
+            ? pendingReqs.filter(matchReq)
+            : state.adminTab === 'approved'
+            ? approvedReqs.filter(matchReq)
+            : state.adminTab === 'rejected'
+            ? rejectedReqs.filter(matchReq)
+            : allReqs.filter(matchReq);
+
+        const filteredUsers = usersList.filter(matchUser);
+
+        return `
+          <div class="min-h-screen bg-[#f8fbff] flex flex-col">
+            <!-- Admin Top Bar -->
+            <div class="bg-slate-900 text-white px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                <span class="font-bold">DMS Solution — Owner Super Admin Panel</span>
+                <span class="hidden sm:inline text-slate-400">|</span>
+                <span class="hidden sm:inline text-sky-300 font-semibold">${esc(state.user?.email || ADMIN_EMAIL)}</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-slate-300">Billing Cycle: <strong>${esc(billing.monthLabel)} (৳500/mo)</strong></span>
+                <button type="button" id="btn-admin-logout" class="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold">Logout</button>
+              </div>
+            </div>
+
+            <!-- Admin Header -->
+            <header class="bg-white border-b border-sky-200 px-4 sm:px-8 py-4 flex flex-wrap items-center justify-between gap-4">
+              <div class="flex items-center gap-3.5">
+                <img src="${LOGO_URL}" referrerpolicy="no-referrer" class="w-12 h-12 rounded-2xl object-contain bg-white p-1 border border-sky-200 shadow-xs" />
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h1 class="text-xl font-extrabold text-slate-900">Super Admin Control Panel</h1>
+                    <span class="px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-extrabold uppercase">Owner Access Only</span>
+                  </div>
+                  <p class="text-xs text-slate-500">সকল ইউজারের মোবাইল নাম্বার, ঠিকানা, ব্যবসার তথ্য এবং bKash/Nagad পেমেন্ট অ্যাপ্রুভাল পরিচালনা করুন</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <input
+                  type="text"
+                  id="admin-search-input"
+                  value="${esc(state.adminSearch)}"
+                  placeholder="নাম, ইমেইল, মোবাইল, ঠিকানা বা TrxID খুঁজুন..."
+                  class="w-64 sm:w-80 px-3.5 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs focus:outline-none focus:border-sky-500 focus:bg-white"
+                />
+              </div>
+            </header>
+
+            <main class="max-w-7xl w-full mx-auto p-4 sm:p-8 space-y-6">
+              ${
+                state.adminError === 'email_unverified'
+                  ? `<div class="p-5 rounded-2xl bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-2">
+                      <div class="font-extrabold text-sm">Admin Email Verification Required</div>
+                      <p>নিরাপত্তার কারণে সকল ইউজারের তথ্য ও পেমেন্ট দেখতে আপনার <strong>${esc(ADMIN_EMAIL)}</strong> একাউন্ট দিয়ে <strong>Continue with Google (1-Click)</strong> লগইন ব্যবহার করুন (Verified email প্রয়োজন)।</p>
+                      <button type="button" id="btn-admin-logout-reauth" class="px-4 py-2 rounded-xl bg-sky-600 text-white font-bold">Logout & Sign In with Google</button>
+                    </div>`
+                  : state.adminError
+                  ? `<div class="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold">${esc(state.adminError)}</div>`
+                  : ''
+              }
+
+              <!-- KPI Summary Cards -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="dms-card rounded-2xl p-5">
+                  <div class="text-xs font-bold text-slate-500 uppercase">Total Registered Users</div>
+                  <div class="text-2xl font-extrabold text-slate-900 mt-1">${usersList.length}</div>
+                  <div class="text-[11px] text-sky-700 font-semibold mt-1">Businesses Created: ${(state.adminBusinesses || []).length}</div>
+                </div>
+                <div class="dms-card rounded-2xl p-5 border-amber-200 bg-amber-50/40">
+                  <div class="text-xs font-bold text-amber-700 uppercase">Pending Approvals</div>
+                  <div class="text-2xl font-extrabold text-amber-800 mt-1">${pendingReqs.length}</div>
+                  <div class="text-[11px] text-amber-700 font-semibold mt-1">Waiting for your verification</div>
+                </div>
+                <div class="dms-card rounded-2xl p-5 border-emerald-200 bg-emerald-50/40">
+                  <div class="text-xs font-bold text-emerald-700 uppercase">Approved Payments</div>
+                  <div class="text-2xl font-extrabold text-emerald-800 mt-1">${approvedReqs.length}</div>
+                  <div class="text-[11px] text-emerald-700 font-semibold mt-1">Rejected: ${rejectedReqs.length}</div>
+                </div>
+                <div class="dms-card rounded-2xl p-5">
+                  <div class="text-xs font-bold text-slate-500 uppercase">Approved Subscription Revenue</div>
+                  <div class="text-2xl font-extrabold text-emerald-700 mt-1">৳${totalRevenue.toLocaleString()}</div>
+                  <div class="text-[11px] text-slate-500 mt-1">bKash: ${BILLING_CONFIG.bkash} | Nagad: ${BILLING_CONFIG.nagad}</div>
+                </div>
+              </div>
+
+              <!-- Filter Tabs -->
+              <div class="flex flex-wrap gap-2 bg-white p-2 rounded-2xl border border-sky-200 shadow-xs text-xs font-bold">
+                ${[
+                  ['pending', `Pending Approvals (${pendingReqs.length})`],
+                  ['users', `All Users & Details (${usersList.length})`],
+                  ['all', `All Payments (${allReqs.length})`],
+                  ['approved', `Approved (${approvedReqs.length})`],
+                  ['rejected', `Rejected (${rejectedReqs.length})`],
+                ]
+                  .map(
+                    ([id, label]) => `
+                    <button type="button" data-admin-tab="${id}" class="px-4 py-2 rounded-xl transition ${
+                      state.adminTab === id
+                        ? 'bg-sky-600 text-white shadow-sm'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }">${esc(label)}</button>`
+                  )
+                  .join('')}
+              </div>
+
+              ${
+                state.adminTab === 'users'
+                  ? `<div class="dms-card rounded-2xl overflow-hidden">
+                      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                        <h2 class="text-sm font-extrabold text-slate-900">Registered Users Directory (নাম, মোবাইল নাম্বার, ঠিকানা ও ব্যবসা)</h2>
+                        <span class="text-xs text-slate-500 font-semibold">${filteredUsers.length} users shown</span>
+                      </div>
+                      <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-left">
+                          <thead class="bg-slate-50 text-[10px] uppercase text-slate-600">
+                            <tr>
+                              <th class="px-4 py-3">User Name & Email</th>
+                              <th class="px-4 py-3">Mobile Number</th>
+                              <th class="px-4 py-3">Address (ঠিকানা)</th>
+                              <th class="px-4 py-3">Business Details</th>
+                              <th class="px-4 py-3">${esc(billing.monthLabel)} Status</th>
+                              <th class="px-4 py-3 text-right">Manual Action</th>
+                            </tr>
+                          </thead>
+                          <tbody class="divide-y divide-slate-100">
+                            ${
+                              filteredUsers.length === 0
+                                ? `<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No users found.</td></tr>`
+                                : filteredUsers
+                                    .map((u) => {
+                                      const isApp = Boolean(u.approvedMonths?.[billing.monthKey]);
+                                      const cleanTel = String(u.phone || '').replace(/[^\d]/g, '');
+                                      const waTel = cleanTel.startsWith('0') ? '88' + cleanTel : cleanTel;
+                                      return `
+                                      <tr class="hover:bg-sky-50/40">
+                                        <td class="px-4 py-3">
+                                          <div class="font-extrabold text-slate-900">${esc(u.displayName || 'Unnamed User')}</div>
+                                          <div class="text-[11px] text-slate-500">${esc(u.email)}</div>
+                                          <div class="text-[10px] text-slate-400">Joined: ${esc((u.createdAt || '').slice(0, 10))}</div>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                          ${
+                                            u.phone
+                                              ? `<div class="font-mono font-bold text-slate-900">${esc(u.phone)}</div>
+                                                 ${waTel ? `<a href="https://wa.me/${esc(waTel)}" target="_blank" rel="noopener noreferrer" class="text-[10px] text-emerald-700 font-bold hover:underline">WhatsApp ↗</a>` : ''}`
+                                              : `<span class="text-slate-400 italic">Not provided yet</span>`
+                                          }
+                                        </td>
+                                        <td class="px-4 py-3 max-w-xs text-slate-700">${u.address ? esc(u.address) : '<span class="text-slate-400 italic">Not provided yet</span>'}</td>
+                                        <td class="px-4 py-3">
+                                          <div class="font-bold text-slate-900">${esc(u.businessName || 'No business yet')}</div>
+                                          <div class="text-[10px] text-slate-500">${esc(u.businessType || '')} ${u.businessCount > 1 ? `(+${u.businessCount - 1} more)` : ''}</div>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                          ${
+                                            isApp
+                                              ? `<span class="px-2 py-1 rounded-md bg-emerald-100 text-emerald-700 font-bold text-[10px]">APPROVED ✓</span>`
+                                              : `<span class="px-2 py-1 rounded-md bg-slate-100 text-slate-600 font-bold text-[10px]">NOT APPROVED</span>`
+                                          }
+                                        </td>
+                                        <td class="px-4 py-3 text-right">
+                                          ${
+                                            !isApp
+                                              ? `<button type="button" data-admin-grant="${esc(u.uid)}" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px]">Approve ${esc(billing.monthKey)}</button>`
+                                              : `<span class="text-[11px] font-bold text-emerald-700">Active</span>`
+                                          }
+                                        </td>
+                                      </tr>`;
+                                    })
+                                    .join('')
+                            }
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>`
+                  : `<div class="dms-card rounded-2xl overflow-hidden">
+                      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                        <h2 class="text-sm font-extrabold text-slate-900">Subscription Payments & Transaction Verification</h2>
+                        <span class="text-xs text-slate-500 font-semibold">${filteredReqs.length} requests</span>
+                      </div>
+                      <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-left">
+                          <thead class="bg-slate-50 text-[10px] uppercase text-slate-600">
+                            <tr>
+                              <th class="px-4 py-3">User & Business</th>
+                              <th class="px-4 py-3">Mobile & Address</th>
+                              <th class="px-4 py-3">Payment Details</th>
+                              <th class="px-4 py-3">TrxID & Sender</th>
+                              <th class="px-4 py-3">Status</th>
+                              <th class="px-4 py-3 text-right">Admin Decision</th>
+                            </tr>
+                          </thead>
+                          <tbody class="divide-y divide-slate-100">
+                            ${
+                              filteredReqs.length === 0
+                                ? `<tr><td colspan="6" class="px-4 py-10 text-center text-slate-400">এই ট্যাবে কোনো পেমেন্ট রিকোয়েস্ট নেই।</td></tr>`
+                                : filteredReqs
+                                    .map((r) => {
+                                      const st = String(r.status || 'PENDING').toUpperCase();
+                                      const badge =
+                                        st === 'APPROVED'
+                                          ? 'bg-emerald-100 text-emerald-700'
+                                          : st === 'REJECTED'
+                                          ? 'bg-rose-100 text-rose-700'
+                                          : 'bg-amber-100 text-amber-800';
+                                      return `
+                                      <tr class="hover:bg-sky-50/40">
+                                        <td class="px-4 py-3">
+                                          <div class="font-extrabold text-slate-900">${esc(r.userName || 'User')}</div>
+                                          <div class="text-[11px] text-slate-500">${esc(r.userEmail)}</div>
+                                          <div class="text-[11px] font-semibold text-sky-700 mt-0.5">${esc(r.businessName || '')}</div>
+                                        </td>
+                                        <td class="px-4 py-3 max-w-xs">
+                                          <div class="font-mono font-bold text-slate-900">${esc(r.userPhone || r.senderPhone || '—')}</div>
+                                          <div class="text-[11px] text-slate-600 mt-0.5">${esc(r.userAddress || 'No address saved')}</div>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                          <div class="font-bold text-slate-900">${esc(r.monthLabel || r.month)}</div>
+                                          <div class="font-extrabold text-emerald-700">৳${r.amount || BILLING_CONFIG.monthlyFee} • <span class="uppercase text-pink-700">${esc(r.method)}</span></div>
+                                          <div class="text-[10px] text-slate-400">${esc((r.submittedAt || '').replace('T', ' ').slice(0, 16))}</div>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                          <div class="font-mono font-extrabold text-sm text-slate-900 select-all">${esc(r.trxId)}</div>
+                                          <div class="text-[11px] text-slate-600">From: <span class="font-mono font-semibold">${esc(r.senderPhone)}</span></div>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                          <span class="px-2 py-0.5 rounded-md font-extrabold text-[10px] ${badge}">${esc(st)}</span>
+                                          ${r.rejectionReason ? `<div class="text-[10px] text-rose-600 mt-1 max-w-[160px]">${esc(r.rejectionReason)}</div>` : ''}
+                                        </td>
+                                        <td class="px-4 py-3 text-right whitespace-nowrap space-x-1.5">
+                                          ${
+                                            st !== 'APPROVED'
+                                              ? `<button type="button" data-admin-approve="${esc(r.id)}" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px]">Approve ✓</button>`
+                                              : ''
+                                          }
+                                          ${
+                                            st !== 'REJECTED'
+                                              ? `<button type="button" data-admin-reject="${esc(r.id)}" class="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold text-[11px]">Reject</button>`
+                                              : ''
+                                          }
+                                        </td>
+                                      </tr>`;
+                                    })
+                                    .join('')
+                            }
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>`
+              }
+            </main>
+          </div>
+        `;
+      }
+
+      function bindAdminEvents() {
+        const outBtn = document.getElementById('btn-admin-logout');
+        if (outBtn) outBtn.onclick = signOutUser;
+        const outReauth = document.getElementById('btn-admin-logout-reauth');
+        if (outReauth) outReauth.onclick = signOutUser;
+
+        const searchInp = document.getElementById('admin-search-input');
+        if (searchInp) {
+          searchInp.oninput = () => {
+            state.adminSearch = searchInp.value;
+            render();
+          };
+        }
+
+        document.querySelectorAll('[data-admin-tab]').forEach((b) => {
+          b.onclick = () => {
+            state.adminTab = b.dataset.adminTab;
+            render();
+          };
+        });
+
+        document.querySelectorAll('[data-admin-approve]').forEach((btn) => {
+          btn.onclick = async () => {
+            const req = (state.adminRequests || []).find((r) => r.id === btn.dataset.adminApprove);
+            if (!req) return;
+            const ok = await askConfirm(
+              'Approve Subscription Payment?',
+              `Approve ৳${req.amount || 500} (${(req.method || '').toUpperCase()} TrxID: ${req.trxId}) for ${req.userName || req.userEmail}?`,
+              'Approve & Unlock',
+              false
+            );
+            if (ok) {
+              btn.disabled = true;
+              try {
+                await approvePaymentRequest(req);
+              } catch (err) {
+                showToast(err.message || 'Approval failed', 'error');
+                btn.disabled = false;
+              }
+            }
+          };
+        });
+
+        document.querySelectorAll('[data-admin-reject]').forEach((btn) => {
+          btn.onclick = () => {
+            const req = (state.adminRequests || []).find((r) => r.id === btn.dataset.adminReject);
+            if (req) openRejectReasonModal(req);
+          };
+        });
+
+        document.querySelectorAll('[data-admin-grant]').forEach((btn) => {
+          btn.onclick = async () => {
+            const u = (state.adminUsers || []).find((x) => (x.uid || x.id) === btn.dataset.adminGrant);
+            if (!u) return;
+            const ok = await askConfirm(
+              'Grant Monthly Access?',
+              `Manually approve current month access for ${u.displayName || u.email}?`,
+              'Approve Access',
+              false
+            );
+            if (ok) {
+              await manualGrantMonthAccess(u);
+            }
+          };
+        });
+      }
+
       function openSupportModal() {
-        openModal(
+        const modal = openModal(
           'DMS Solution Support Desk',
           `
             <div class="space-y-4 text-xs text-slate-700">
+              <!-- Support Header Card -->
               <div class="flex items-center gap-3 p-4 rounded-2xl bg-sky-50 border border-sky-200">
-                <img src="${LOGO_URL}" referrerpolicy="no-referrer" class="w-12 h-12 rounded-xl object-contain bg-white p-1 border border-sky-200" />
+                <img src="${LOGO_URL}" referrerpolicy="no-referrer" class="w-12 h-12 rounded-xl object-contain bg-white p-1 border border-sky-200 shrink-0" />
                 <div>
                   <div class="font-extrabold text-sm text-slate-900">DMS Solution Support</div>
                   <div>Owner: <strong>DIL Mohammad Sohel</strong></div>
                   <div class="text-emerald-700 font-bold">WhatsApp: 01789637029</div>
                 </div>
               </div>
-              <a href="https://wa.me/8801789637029" target="_blank" rel="noopener noreferrer" class="block w-full text-center py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold">Chat on WhatsApp Now</a>
+
+              <!-- Payment Instructions Section -->
+              <div class="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+                <div class="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                  <div class="flex items-center gap-2 font-extrabold text-sm text-slate-900">
+                    <i data-lucide="credit-card" class="w-4 h-4 text-sky-600"></i>
+                    <span>Payment Instructions</span>
+                  </div>
+                  <span class="px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-bold">5th – 10th Monthly</span>
+                </div>
+
+                <div class="space-y-2 text-[11px] leading-relaxed text-slate-600">
+                  <p>
+                    <strong class="text-slate-900">1. Billing Window & Monthly Fee (5th – 10th • ৳500/month):</strong>
+                    A monthly subscription payment notice for <strong>৳500 (৫০০ টাকা)</strong> appears on your dashboard between the <strong>5th and 10th</strong> of every month. You may temporarily skip the notice until the 10th. After the 10th, unpaid accounts are locked until payment is verified and approved.
+                  </p>
+                  <p>
+                    <strong class="text-slate-900">2. Send Money ৳500 to Official Numbers:</strong>
+                    Copy one of the numbers below and complete a <strong>৳500 (৫০০ টাকা) Send Money</strong> transfer via bKash or Nagad:
+                  </p>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div class="p-3 rounded-xl bg-pink-50/70 border border-pink-200 flex items-center justify-between gap-2">
+                    <div>
+                      <div class="text-[10px] font-extrabold text-pink-700 uppercase">bKash (Send Money)</div>
+                      <div class="text-sm font-extrabold font-mono text-slate-900">${BILLING_CONFIG.bkash}</div>
+                    </div>
+                    <button type="button" data-sup-copy="${BILLING_CONFIG.bkash}" data-sup-lbl="bKash" class="px-2.5 py-1.5 rounded-lg bg-white border border-pink-300 text-pink-700 font-bold text-[11px] hover:bg-pink-100">Copy</button>
+                  </div>
+                  <div class="p-3 rounded-xl bg-orange-50/70 border border-orange-200 flex items-center justify-between gap-2">
+                    <div>
+                      <div class="text-[10px] font-extrabold text-orange-700 uppercase">Nagad (Send Money)</div>
+                      <div class="text-sm font-extrabold font-mono text-slate-900">${BILLING_CONFIG.nagad}</div>
+                    </div>
+                    <button type="button" data-sup-copy="${BILLING_CONFIG.nagad}" data-sup-lbl="Nagad" class="px-2.5 py-1.5 rounded-lg bg-white border border-orange-300 text-orange-700 font-bold text-[11px] hover:bg-orange-100">Copy</button>
+                  </div>
+                </div>
+
+                <p class="text-[11px] leading-relaxed text-slate-600">
+                  <strong class="text-slate-900">3. Submit TrxID & Wait for Admin Approval:</strong>
+                  Click the dashboard payment notice (or <em>Pay Monthly Bill</em>), select bKash or Nagad, enter your 11-digit sender mobile number and the exact <strong>Transaction ID (TrxID)</strong>, and submit. Once the Owner verifies and clicks <strong>Approve</strong>, your account unlocks automatically in real time.
+                </p>
+
+                <!-- Verification Failure Troubleshooting -->
+                <div class="p-3 rounded-xl bg-rose-50/70 border border-rose-200 space-y-1.5">
+                  <div class="font-extrabold text-rose-900 flex items-center gap-1.5">
+                    <i data-lucide="alert-triangle" class="w-3.5 h-3.5 text-rose-600 shrink-0"></i>
+                    <span>If Payment Verification Fails or Is Rejected</span>
+                  </div>
+                  <ul class="list-disc pl-4 space-y-1 text-[11px] text-rose-900/90">
+                    <li><strong>Check TrxID Format:</strong> Enter the exact 6–20 character alphanumeric Transaction ID from your SMS/app receipt without spaces (do not enter our receiver number).</li>
+                    <li><strong>Verify Sender Number:</strong> Use a valid 11-digit Bangladesh mobile number (<code class="font-mono">01XXXXXXXXX</code>) from which you sent the money.</li>
+                    <li><strong>Avoid Duplicate TrxIDs:</strong> Each Transaction ID can only be submitted once; older months' TrxIDs will be rejected.</li>
+                    <li><strong>Need Manual Help?</strong> Send your payment screenshot, TrxID, and registered email to WhatsApp <strong class="font-mono">${BILLING_CONFIG.bkash}</strong> for immediate Admin approval.</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                ${
+                  state.user
+                    ? `<button type="button" id="btn-sup-open-pay" class="w-full text-center py-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold">Open Payment Form</button>`
+                    : ''
+                }
+                <a href="https://wa.me/8801789637029?text=${encodeURIComponent('Hello DMS Solution Support, I need assistance with my monthly subscription payment verification.')}" target="_blank" rel="noopener noreferrer" class="${state.user ? '' : 'sm:col-span-2 '}block w-full text-center py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold">Chat on WhatsApp Now</a>
+              </div>
             </div>
-          `
+          `,
+          'max-w-xl'
         );
+
+        modal.querySelectorAll('[data-sup-copy]').forEach((btn) => {
+          btn.onclick = () => {
+            const num = btn.dataset.supCopy;
+            const lbl = btn.dataset.supLbl;
+            navigator.clipboard?.writeText(num);
+            showToast(`${lbl} number ${num} copied!`, 'info');
+          };
+        });
+        const payBtn = modal.querySelector('#btn-sup-open-pay');
+        if (payBtn) {
+          payBtn.onclick = () => {
+            modal.remove();
+            openSubscriptionPaymentModal();
+          };
+        }
       }
 
       // ================= RENDER & EVENTS =================
@@ -3891,6 +4804,9 @@
         if (!state.user) {
           root.innerHTML = renderAuthView();
           bindAuthEvents();
+        } else if (isSuperAdminUser()) {
+          root.innerHTML = renderAdminPanelView();
+          bindAdminEvents();
         } else if (getBillingStatus().isLocked) {
           root.innerHTML = renderLockedPaywallView();
           const lockOut = document.getElementById('btn-lock-signout');
@@ -3947,6 +4863,10 @@
         });
         const nameInp = document.getElementById('auth-name-input');
         if (nameInp) nameInp.oninput = () => { state.authName = nameInp.value; };
+        const phoneInp = document.getElementById('auth-phone-input');
+        if (phoneInp) phoneInp.oninput = () => { state.authPhone = phoneInp.value; };
+        const addrInp = document.getElementById('auth-address-input');
+        if (addrInp) addrInp.oninput = () => { state.authAddress = addrInp.value; };
         const emailInp = document.getElementById('auth-email-input');
         if (emailInp) emailInp.oninput = () => { state.authEmail = emailInp.value; };
         const gBtn = document.getElementById('btn-google-signin');
@@ -3968,7 +4888,7 @@
             e.preventDefault();
             const fd = new FormData(form);
             if (state.authTab === 'login') signInWithEmail(fd.get('email'), fd.get('password'));
-            else signUpWithEmail(fd.get('name') || '', fd.get('email'), fd.get('password'));
+            else signUpWithEmail(fd.get('name') || '', fd.get('email'), fd.get('password'), fd.get('phone') || '', fd.get('address') || '');
           };
         }
       }
@@ -4585,13 +5505,35 @@
           state.user = user;
           state.authLoading = true;
           render();
-          state.userProfile = await syncUserProfile(user, state.pendingDisplayName || '');
-          await fetchBusinessesForUser(user, state.userProfile);
+          state.userProfile = await syncUserProfile(user, {
+            displayName: state.pendingDisplayName || '',
+            phone: state.pendingPhone || '',
+            address: state.pendingAddress || '',
+          });
+          if (isSuperAdminUser(user)) {
+            cleanupBusinessSubs();
+            cleanupUserSubs();
+            state.businesses = [];
+            state.currentBusiness = null;
+            subscribeAdminData();
+          } else {
+            cleanupAdminSubs();
+            subscribeUserAccount(user.uid);
+            await fetchBusinessesForUser(user, state.userProfile);
+          }
           state.authLoading = false;
           render();
         } else {
+          cleanupBusinessSubs();
+          cleanupUserSubs();
+          cleanupAdminSubs();
           state.user = null;
           state.userProfile = null;
+          state.userRequests = [];
+          state.adminUsers = [];
+          state.adminBusinesses = [];
+          state.adminRequests = [];
+          state.adminError = '';
           state.businesses = [];
           selectBusiness(null);
           state.authLoading = false;
