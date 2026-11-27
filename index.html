@@ -127,6 +127,8 @@
           signInWithEmailAndPassword,
           createUserWithEmailAndPassword,
           signInWithPopup,
+          signInWithRedirect,
+          getRedirectResult,
           GoogleAuthProvider,
           signOut,
           sendPasswordResetEmail,
@@ -140,6 +142,7 @@
           doc,
           setDoc,
           getDoc,
+          getDocFromServer,
           getDocs,
           updateDoc,
           deleteDoc,
@@ -178,6 +181,39 @@
       const storage = getStorage(app);
 
       setPersistence(auth, browserLocalPersistence).catch(() => {});
+
+      async function testConnection() {
+        try {
+          await getDocFromServer(doc(db, 'test', 'connection'));
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('the client is offline')) {
+            console.error('Please check your Firebase configuration.');
+          }
+        }
+      }
+      testConnection();
+
+      function handleFirestoreError(error, operationType, path) {
+        const errInfo = {
+          error: error instanceof Error ? error.message : String(error),
+          authInfo: {
+            userId: auth.currentUser?.uid || null,
+            email: auth.currentUser?.email || null,
+            emailVerified: auth.currentUser?.emailVerified ?? null,
+            isAnonymous: auth.currentUser?.isAnonymous ?? null,
+            tenantId: auth.currentUser?.tenantId || null,
+            providerInfo:
+              auth.currentUser?.providerData?.map((p) => ({
+                providerId: p.providerId,
+                email: p.email,
+              })) || [],
+          },
+          operationType,
+          path,
+        };
+        console.error('Firestore Error:', JSON.stringify(errInfo));
+        return errInfo;
+      }
 
       function sanitizeForFirestore(obj) {
         if (obj === null || typeof obj !== 'object') return obj;
@@ -323,7 +359,11 @@
 
         // Auth view state
         authTab: 'login',
+        authName: '',
+        authEmail: '',
         authError: null,
+        authErrorCode: '',
+        pendingDisplayName: '',
         authShowGuide: false,
         authLoadingSubmit: false,
 
@@ -439,21 +479,24 @@
       function formatAuthError(err) {
         const code = err?.code || '';
         if (code === 'auth/unauthorized-domain') {
-          return `Domain "${window.location.hostname}" is not authorized in Firebase Console → Authentication → Settings → Authorized domains. Add it to sign in with Google.`;
+          return `Domain "${window.location.hostname}" is not authorized in Firebase Console → Authentication → Settings → Authorized domains.`;
         }
         if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
           return 'Invalid email or password. Please check your credentials and try again.';
         }
         if (code === 'auth/email-already-in-use') {
-          return 'An account with this email already exists. Please sign in instead.';
+          return 'An account with this email already exists. Please switch to "Sign In" instead.';
         }
         if (code === 'auth/weak-password') {
           return 'Password must be at least 6 characters long.';
         }
         if (code === 'auth/operation-not-allowed') {
-          return 'This sign-in method is not enabled in Firebase Authentication Console.';
+          return 'Email/Password sign-up is not yet turned ON in Firebase Console. Enable Email/Password in Firebase Authentication → Sign-in method, or use Continue with Google.';
         }
-        if (code === 'auth/popup-closed-by-user') {
+        if (code === 'auth/popup-blocked') {
+          return 'Popup was blocked by your browser. Please allow popups or try again.';
+        }
+        if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
           return 'Sign-in popup was closed before completing authentication.';
         }
         if (code === 'auth/network-request-failed') {
@@ -462,8 +505,9 @@
         return err?.message || 'Authentication error occurred.';
       }
 
-      async function syncUserProfile(user) {
+      async function syncUserProfile(user, overrideName = '') {
         if (!user) return null;
+        const path = `users/${user.uid}`;
         try {
           const userRef = doc(db, 'users', user.uid);
           const snap = await getDoc(userRef);
@@ -471,7 +515,7 @@
           const profile = sanitizeForFirestore({
             uid: user.uid,
             email: user.email || existing.email || '',
-            displayName: user.displayName || existing.displayName || (user.email ? user.email.split('@')[0] : 'Business User'),
+            displayName: overrideName || user.displayName || existing.displayName || (user.email ? user.email.split('@')[0] : 'Business User'),
             photoURL: user.photoURL || existing.photoURL || '',
             memberBusinessIds: Array.isArray(existing.memberBusinessIds) ? existing.memberBusinessIds : [],
             updatedAt: new Date().toISOString(),
@@ -480,7 +524,7 @@
           await setDoc(userRef, profile, { merge: true });
           return profile;
         } catch (err) {
-          console.error('syncUserProfile error:', err);
+          handleFirestoreError(err, 'write', path);
           return null;
         }
       }
@@ -624,12 +668,15 @@
       }
 
       async function signInWithEmail(email, password) {
+        state.authEmail = email.trim();
         state.authLoadingSubmit = true;
         state.authError = null;
+        state.authErrorCode = '';
         render();
         try {
           await signInWithEmailAndPassword(auth, email.trim(), password);
         } catch (err) {
+          state.authErrorCode = err?.code || '';
           state.authError = formatAuthError(err);
           state.authLoadingSubmit = false;
           render();
@@ -637,17 +684,26 @@
       }
 
       async function signUpWithEmail(name, email, password) {
+        const cleanName = name.trim();
+        const cleanEmail = email.trim();
+        state.authName = cleanName;
+        state.authEmail = cleanEmail;
+        state.pendingDisplayName = cleanName;
         state.authLoadingSubmit = true;
         state.authError = null;
+        state.authErrorCode = '';
         render();
         try {
-          const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-          if (name.trim()) {
-            await updateProfile(cred.user, { displayName: name.trim() });
+          const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+          if (cleanName) {
+            await updateProfile(cred.user, { displayName: cleanName });
           }
-          await syncUserProfile(cred.user);
+          state.userProfile = await syncUserProfile(cred.user, cleanName);
+          state.pendingDisplayName = '';
           showToast('Account created successfully!');
         } catch (err) {
+          state.pendingDisplayName = '';
+          state.authErrorCode = err?.code || '';
           state.authError = formatAuthError(err);
           state.authLoadingSubmit = false;
           render();
@@ -657,13 +713,27 @@
       async function signInWithGoogle() {
         state.authLoadingSubmit = true;
         state.authError = null;
+        state.authErrorCode = '';
         render();
+        const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({ prompt: 'select_account' });
         try {
-          const provider = new GoogleAuthProvider();
-          provider.setCustomParameters({ prompt: 'select_account' });
           await signInWithPopup(auth, provider);
         } catch (err) {
-          state.authError = formatAuthError(err);
+          const code = err?.code || '';
+          const isTopLevel = (() => { try { return window.self === window.top; } catch { return false; } })();
+          if (isTopLevel && (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request')) {
+            try {
+              await signInWithRedirect(auth, provider);
+              return;
+            } catch (rErr) {
+              state.authErrorCode = rErr?.code || '';
+              state.authError = formatAuthError(rErr);
+            }
+          } else {
+            state.authErrorCode = code;
+            state.authError = formatAuthError(err);
+          }
           state.authLoadingSubmit = false;
           render();
         }
@@ -1474,16 +1544,33 @@
 
                   ${
                     state.authError
-                      ? `<div class="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs leading-relaxed space-y-2">
+                      ? `<div class="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs leading-relaxed space-y-2.5">
                           <div class="font-bold flex items-center gap-1.5">
                             <i data-lucide="alert-circle" class="w-4 h-4 text-rose-600 shrink-0"></i>
                             <span>Authentication Notice</span>
                           </div>
                           <p>${esc(state.authError)}</p>
                           ${
-                            state.authError.includes('Authorized domains')
-                              ? `<div class="pt-1 text-[11px] bg-white/80 p-2.5 rounded-xl border border-rose-200 text-slate-700">
-                                  <strong>GitHub Pages Tip:</strong> Copy <code class="px-1 py-0.5 bg-slate-100 rounded font-mono">${esc(hostname)}</code> and add it in Firebase Console → Authentication → Settings → Authorized domains. You can also sign in with Email & Password below right now.
+                            state.authErrorCode === 'auth/operation-not-allowed'
+                              ? `<div class="p-3 rounded-xl bg-white border border-rose-200 text-slate-700 text-[11px] space-y-2">
+                                  <div class="font-bold text-slate-900">Quick 1-Time Fix (এটি একবার অন করলেই হবে):</div>
+                                  <ol class="list-decimal pl-4 space-y-1">
+                                    <li>Open <a href="https://console.firebase.google.com/project/${esc(firebaseConfig.projectId)}/authentication/providers" target="_blank" rel="noopener noreferrer" class="text-sky-700 font-bold underline">Firebase Sign-in Providers</a> → click <strong>Add new provider</strong> → select <strong>Email/Password</strong> → turn <strong>Enable</strong> ON → <strong>Save</strong>.</li>
+                                    <li>Or click <strong>Continue with Google (1-Click)</strong> below (make sure <code class="px-1 py-0.5 bg-slate-100 rounded font-mono">${esc(hostname)}</code> is in Authorized domains).</li>
+                                  </ol>
+                                  <div class="flex flex-wrap gap-2 pt-1">
+                                    <a href="https://console.firebase.google.com/project/${esc(firebaseConfig.projectId)}/authentication/providers" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 rounded-lg bg-sky-600 text-white font-bold hover:bg-sky-700">Open Firebase Providers ↗</a>
+                                    <button type="button" id="btn-error-google-signin" class="px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700">Try Google Sign-In</button>
+                                  </div>
+                                </div>`
+                              : state.authErrorCode === 'auth/unauthorized-domain' || state.authError.includes('Authorized domains')
+                              ? `<div class="p-3 rounded-xl bg-white border border-rose-200 text-slate-700 text-[11px] space-y-2">
+                                  <div class="font-bold text-slate-900">Authorize "${esc(hostname)}" in Firebase (একবার অ্যাড করুন):</div>
+                                  <p>Open <a href="https://console.firebase.google.com/project/${esc(firebaseConfig.projectId)}/authentication/settings" target="_blank" rel="noopener noreferrer" class="text-sky-700 font-bold underline">Firebase Authorized Domains</a> → click <strong>Add domain</strong> → paste <code class="px-1 py-0.5 bg-slate-100 rounded font-mono">${esc(hostname)}</code> → <strong>Add</strong>.</p>
+                                  <div class="flex flex-wrap gap-2">
+                                    <button type="button" id="btn-copy-domain" class="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold">Copy Domain</button>
+                                    <a href="https://console.firebase.google.com/project/${esc(firebaseConfig.projectId)}/authentication/settings" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 rounded-lg bg-sky-600 text-white font-bold hover:bg-sky-700">Open Authorized Domains ↗</a>
+                                  </div>
                                 </div>`
                               : ''
                           }
@@ -1517,13 +1604,13 @@
                       !isLogin
                         ? `<div>
                             <label class="block text-xs font-semibold text-slate-700 mb-1">Full Name</label>
-                            <input type="text" name="name" required placeholder="e.g. DIL Mohammad Sohel" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-sm focus:outline-none focus:border-sky-500 focus:bg-white" />
+                            <input type="text" id="auth-name-input" name="name" required value="${esc(state.authName)}" placeholder="e.g. DIL Mohammad Sohel" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-sm focus:outline-none focus:border-sky-500 focus:bg-white" />
                           </div>`
                         : ''
                     }
                     <div>
                       <label class="block text-xs font-semibold text-slate-700 mb-1">Email Address</label>
-                      <input type="email" id="auth-email-input" name="email" required placeholder="owner@yourbusiness.com" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-sm focus:outline-none focus:border-sky-500 focus:bg-white" />
+                      <input type="email" id="auth-email-input" name="email" required value="${esc(state.authEmail)}" placeholder="owner@yourbusiness.com" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-sm focus:outline-none focus:border-sky-500 focus:bg-white" />
                     </div>
                     <div>
                       <div class="flex items-center justify-between mb-1">
@@ -3505,11 +3592,25 @@
           b.onclick = () => {
             state.authTab = b.dataset.tab;
             state.authError = null;
+            state.authErrorCode = '';
             render();
           };
         });
+        const nameInp = document.getElementById('auth-name-input');
+        if (nameInp) nameInp.oninput = () => { state.authName = nameInp.value; };
+        const emailInp = document.getElementById('auth-email-input');
+        if (emailInp) emailInp.oninput = () => { state.authEmail = emailInp.value; };
         const gBtn = document.getElementById('btn-google-signin');
         if (gBtn) gBtn.onclick = signInWithGoogle;
+        const gErrBtn = document.getElementById('btn-error-google-signin');
+        if (gErrBtn) gErrBtn.onclick = signInWithGoogle;
+        const copyDomBtn = document.getElementById('btn-copy-domain');
+        if (copyDomBtn) {
+          copyDomBtn.onclick = () => {
+            navigator.clipboard?.writeText(window.location.hostname || '');
+            showToast('Domain copied: ' + (window.location.hostname || ''), 'info');
+          };
+        }
         const fBtn = document.getElementById('btn-forgot-pw');
         if (fBtn) fBtn.onclick = () => sendPasswordReset(document.getElementById('auth-email-input')?.value || '');
         const form = document.getElementById('auth-email-form');
@@ -4098,14 +4199,24 @@
       }
 
       // ================= BOOTSTRAP AUTH =================
+      getRedirectResult(auth).catch((err) => {
+        if (err && err.code) {
+          state.authErrorCode = err.code;
+          state.authError = formatAuthError(err);
+          state.authLoading = false;
+          render();
+        }
+      });
+
       onAuthStateChanged(auth, async (user) => {
         state.authLoadingSubmit = false;
         state.authError = null;
+        state.authErrorCode = '';
         if (user) {
           state.user = user;
           state.authLoading = true;
           render();
-          state.userProfile = await syncUserProfile(user);
+          state.userProfile = await syncUserProfile(user, state.pendingDisplayName || '');
           await fetchBusinessesForUser(user, state.userProfile);
           state.authLoading = false;
           render();
