@@ -106,6 +106,7 @@
         "businessId": { "type": "string" },
         "name": { "type": "string" },
         "phone": { "type": "string" },
+        "company": { "type": "string" },
         "email": { "type": "string" },
         "address": { "type": "string" },
         "notes": { "type": "string" },
@@ -230,18 +231,73 @@
       "properties": {
         "id": { "type": "string" },
         "businessId": { "type": "string" },
+        "type": { "type": "string", "enum": ["SALE_RETURN", "PURCHASE_RETURN"] },
         "returnType": { "type": "string" },
+        "referenceId": { "type": "string" },
         "invoiceId": { "type": "string" },
         "invoiceNo": { "type": "string" },
         "partyId": { "type": "string" },
         "partyName": { "type": "string" },
         "items": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "cashRefund": { "type": "number" },
+        "dueAdjusted": { "type": "number" },
+        "cogsAmount": { "type": "number" },
+        "accountId": { "type": "string" },
         "totalRefund": { "type": "number" },
         "paymentAccountId": { "type": "string" },
         "reason": { "type": "string" },
+        "createdBy": { "type": "string" },
         "createdAt": { "type": "string" }
       },
-      "required": ["id", "businessId", "returnType", "totalRefund"]
+      "required": ["id", "type", "totalAmount"]
+    },
+    "CashbookEntry": {
+      "title": "CashbookEntry",
+      "description": "Immutable cashbook and general ledger transaction entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "entryType": {
+          "type": "string",
+          "enum": ["SALE", "PURCHASE", "EXPENSE", "DUE_COLLECTION", "SUPPLIER_PAYMENT", "SALE_RETURN", "PURCHASE_RETURN", "CAPITAL_IN", "DRAWING_OUT", "OTHER_INCOME", "LOAN_IN", "LOAN_REPAY", "TRANSFER_IN", "TRANSFER_OUT"]
+        },
+        "direction": { "type": "string", "enum": ["IN", "OUT"] },
+        "amount": { "type": "number" },
+        "accountId": { "type": "string" },
+        "accountName": { "type": "string" },
+        "partyName": { "type": "string" },
+        "referenceId": { "type": "string" },
+        "notes": { "type": "string" },
+        "date": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "entryType", "direction", "amount", "createdBy", "createdAt"]
+    },
+    "SupplierPayment": {
+      "title": "SupplierPayment",
+      "description": "Immutable supplier payment ledger record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "paymentNumber": { "type": "string" },
+        "supplierId": { "type": "string" },
+        "supplierName": { "type": "string" },
+        "amount": { "type": "number" },
+        "accountId": { "type": "string" },
+        "accountName": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "purchaseId": { "type": "string" },
+        "billNumber": { "type": "string" },
+        "date": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "supplierId", "amount", "createdBy", "createdAt"]
     },
     "AuditLog": {
       "title": "AuditLog",
@@ -318,6 +374,10 @@
       "schema": "Supplier",
       "description": "Supplier accounts and dues"
     },
+    "/businesses/{businessId}/supplierPayments/{paymentId}": {
+      "schema": "SupplierPayment",
+      "description": "Immutable supplier payment ledger entries"
+    },
     "/businesses/{businessId}/sales/{saleId}": {
       "schema": "Sale",
       "description": "Sales invoices"
@@ -341,6 +401,10 @@
     "/businesses/{businessId}/returns/{returnId}": {
       "schema": "Return",
       "description": "Product return logs"
+    },
+    "/businesses/{businessId}/cashbook/{entryId}": {
+      "schema": "CashbookEntry",
+      "description": "Immutable business cashbook and capital/income/drawing ledger"
     },
     "/businesses/{businessId}/auditLogs/{logId}": {
       "schema": "AuditLog",

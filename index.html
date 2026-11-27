@@ -431,12 +431,14 @@
         products: [],
         customers: [],
         suppliers: [],
+        supplierPayments: [],
         sales: [],
         purchases: [],
         accounts: [],
         expenses: [],
         stockMovements: [],
         returns: [],
+        cashbook: [],
         members: [],
         auditLogs: [],
         unsubs: [],
@@ -510,8 +512,15 @@
 
         customersSearch: '',
         suppliersSearch: '',
+        suppliersFilter: 'ALL',
+        suppliersSort: 'NAME',
         expensesSearch: '',
         expensesCategory: 'ALL',
+        returnsSearch: '',
+        returnsTypeFilter: 'ALL',
+        accountsTab: 'accounts',
+        cashbookFilterType: 'ALL',
+        cashbookSearch: '',
 
         reportsType: 'PL',
         reportsTimeFilter: 'MONTH',
@@ -545,21 +554,70 @@
         const inventoryValue = state.products.reduce((s, p) => s + (p.currentStock || 0) * (p.purchasePrice || 0), 0);
         const lowStockCount = state.products.filter((p) => (p.currentStock || 0) <= (p.minStockAlert || 0)).length;
 
+        const salesReturnTotal = state.returns
+          .filter((r) => r.type === 'SALE_RETURN')
+          .reduce((s, r) => s + Number(r.totalAmount || r.totalRefund || 0), 0);
+        const purchaseReturnTotal = state.returns
+          .filter((r) => r.type === 'PURCHASE_RETURN')
+          .reduce((s, r) => s + Number(r.totalAmount || r.totalRefund || 0), 0);
+
+        const netSales = Math.max(0, totalSales - salesReturnTotal);
+        const netPurchases = Math.max(0, totalPurchases - purchaseReturnTotal);
+
         let totalCOGS = 0;
         state.sales.forEach((sale) => {
           (sale.items || []).forEach((it) => {
-            totalCOGS += (it.purchasePrice || 0) * (it.quantity || 0);
+            totalCOGS += Number(it.purchasePrice || 0) * Number(it.quantity || 0);
           });
         });
-        const grossProfit = totalSales - totalCOGS;
-        const netProfit = grossProfit - totalExpenses;
+        let returnedCOGS = 0;
+        state.returns
+          .filter((r) => r.type === 'SALE_RETURN')
+          .forEach((ret) => {
+            if (typeof ret.cogsAmount === 'number') {
+              returnedCOGS += ret.cogsAmount;
+            } else {
+              (ret.items || []).forEach((it) => {
+                returnedCOGS += Number(it.purchasePrice || 0) * Number(it.quantity || 0);
+              });
+            }
+          });
+        const netCOGS = Math.max(0, totalCOGS - returnedCOGS);
+
+        const otherIncomeTotal = state.cashbook
+          .filter((e) => e.entryType === 'OTHER_INCOME')
+          .reduce((s, e) => s + Number(e.amount || 0), 0);
+        const ownerCapitalTotal = state.cashbook
+          .filter((e) => e.entryType === 'CAPITAL_IN')
+          .reduce((s, e) => s + Number(e.amount || 0), 0);
+        const ownerDrawingsTotal = state.cashbook
+          .filter((e) => e.entryType === 'DRAWING_OUT')
+          .reduce((s, e) => s + Number(e.amount || 0), 0);
+        const loanInTotal = state.cashbook
+          .filter((e) => e.entryType === 'LOAN_IN')
+          .reduce((s, e) => s + Number(e.amount || 0), 0);
+        const loanRepayTotal = state.cashbook
+          .filter((e) => e.entryType === 'LOAN_REPAY')
+          .reduce((s, e) => s + Number(e.amount || 0), 0);
+        const loansPayable = Math.max(0, loanInTotal - loanRepayTotal);
+
+        const grossProfit = netSales - netCOGS;
+        const netProfit = grossProfit + otherIncomeTotal - totalExpenses;
 
         return {
           totalSales,
           todaySales,
+          salesReturnTotal,
+          netSales,
           totalPurchases,
           todayPurchases,
+          purchaseReturnTotal,
+          netPurchases,
           totalExpenses,
+          otherIncomeTotal,
+          ownerCapitalTotal,
+          ownerDrawingsTotal,
+          loansPayable,
           totalReceivables,
           totalPayables,
           cashBalance,
@@ -568,6 +626,7 @@
           totalProducts: state.products.length,
           inventoryValue,
           lowStockCount,
+          totalCOGS: netCOGS,
           grossProfit,
           netProfit,
         };
@@ -1183,12 +1242,14 @@
         state.products = [];
         state.customers = [];
         state.suppliers = [];
+        state.supplierPayments = [];
         state.sales = [];
         state.purchases = [];
         state.accounts = [];
         state.expenses = [];
         state.stockMovements = [];
         state.returns = [];
+        state.cashbook = [];
         state.members = [];
         state.auditLogs = [];
         state.salesCart = [];
@@ -1207,12 +1268,14 @@
           ['products', 'products', 'name', 'asc'],
           ['customers', 'customers', 'name', 'asc'],
           ['suppliers', 'suppliers', 'name', 'asc'],
+          ['supplierPayments', 'supplierPayments', 'createdAt', 'desc'],
           ['sales', 'sales', 'createdAt', 'desc'],
           ['purchases', 'purchases', 'createdAt', 'desc'],
           ['accounts', 'accounts', 'name', 'asc'],
           ['expenses', 'expenses', 'date', 'desc'],
           ['stockMovements', 'stockMovements', 'createdAt', 'desc'],
           ['returns', 'returns', 'createdAt', 'desc'],
+          ['cashbook', 'cashbook', 'createdAt', 'desc'],
           ['members', 'members', 'joinedAt', 'desc'],
           ['auditLogs', 'auditLogs', 'timestamp', 'desc'],
         ];
@@ -1563,6 +1626,78 @@
         render();
       }
 
+      function recordCashbookEntryTx(tx, bizId, { entryType, direction, amount, accountId = '', accountName = '', partyName = '', referenceId = '', notes = '', date = '', now = '' }) {
+        const ts = now || new Date().toISOString();
+        const entryId = 'cb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+        const amt = Math.max(0, Number(amount || 0));
+        tx.set(
+          doc(db, 'businesses', bizId, 'cashbook', entryId),
+          sanitizeForFirestore({
+            id: entryId,
+            entryType,
+            direction,
+            amount: amt,
+            accountId: accountId || '',
+            accountName: accountName || '',
+            partyName: partyName || '',
+            referenceId: referenceId || '',
+            notes: notes || '',
+            date: date || ts.slice(0, 10),
+            createdBy: state.user.uid,
+            createdByName: state.user.displayName || state.user.email || 'User',
+            createdAt: ts,
+          })
+        );
+        return entryId;
+      }
+
+      async function recordCapitalOrIncomeTransaction({ entryType, amount, date, accountId, partyName = '', notes = '' }) {
+        const bizId = state.currentBusiness.id;
+        const amt = Number(amount || 0);
+        if (!(amt > 0)) throw new Error('Amount must be greater than zero');
+        const isIn = ['CAPITAL_IN', 'OTHER_INCOME', 'LOAN_IN'].includes(entryType);
+        const direction = isIn ? 'IN' : 'OUT';
+        await runTransaction(db, async (tx) => {
+          const aRef = accountId ? doc(db, 'businesses', bizId, 'accounts', accountId) : null;
+          const aSnap = aRef ? await tx.get(aRef) : null;
+          const now = new Date().toISOString();
+          let accName = '';
+          if (aRef && aSnap && aSnap.exists()) {
+            accName = aSnap.data().name || '';
+            const cur = Number(aSnap.data().balance || 0);
+            if (!isIn && cur < amt) {
+              throw new Error(`Insufficient balance in ${accName}`);
+            }
+            tx.update(aRef, { balance: isIn ? cur + amt : cur - amt, updatedAt: now });
+          }
+          recordCashbookEntryTx(tx, bizId, {
+            entryType,
+            direction,
+            amount: amt,
+            accountId: accountId || '',
+            accountName: accName,
+            partyName: partyName || (isIn ? 'Owner / Source' : 'Owner / Lender'),
+            referenceId: entryType,
+            notes: notes || entryType.replace(/_/g, ' '),
+            date: date || now.slice(0, 10),
+            now,
+          });
+          const logId = 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+          tx.set(
+            doc(db, 'businesses', bizId, 'auditLogs', logId),
+            sanitizeForFirestore({
+              userId: state.user.uid,
+              userName: state.user.displayName || state.user.email || 'User',
+              module: 'ACCOUNTS',
+              action: entryType,
+              details: `${entryType.replace(/_/g, ' ')}: ${state.currentBusiness.currency}${amt}${partyName ? ' (' + partyName + ')' : ''}`,
+              timestamp: now,
+            })
+          );
+        });
+        showToast('Bookkeeping entry recorded!');
+      }
+
       async function createSale(payload) {
         const bizId = state.currentBusiness.id;
         let savedSale = null;
@@ -1674,6 +1809,19 @@
               balance: Number(accSnap.data().balance || 0) + Number(payload.paidAmount),
               updatedAt: now,
             });
+            if (Number(payload.paidAmount) > 0) {
+              recordCashbookEntryTx(tx, bizId, {
+                entryType: 'SALE',
+                direction: 'IN',
+                amount: Number(payload.paidAmount),
+                accountId: accSnap.id,
+                accountName: accSnap.data().name || '',
+                partyName: savedSale.customerName,
+                referenceId: invoiceNumber,
+                notes: `Cash received on invoice ${invoiceNumber}`,
+                now,
+              });
+            }
           }
 
           const logId = 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
@@ -1737,6 +1885,7 @@
             discount: Number(payload.discount || 0),
             total: Number(payload.total),
             paidAmount: Number(payload.paidAmount),
+            initialPaidAmount: Number(payload.paidAmount),
             dueAmount,
             paymentMethod: payload.paymentMethod || 'cash',
             accountId: payload.accountId || '',
@@ -1791,6 +1940,19 @@
               balance: Number(accSnap.data().balance || 0) - Number(payload.paidAmount),
               updatedAt: now,
             });
+            if (Number(payload.paidAmount) > 0) {
+              recordCashbookEntryTx(tx, bizId, {
+                entryType: 'PURCHASE',
+                direction: 'OUT',
+                amount: Number(payload.paidAmount),
+                accountId: accSnap.id,
+                accountName: accSnap.data().name || '',
+                partyName: savedPurchase.supplierName,
+                referenceId: billNumber,
+                notes: `Paid on purchase ${billNumber}`,
+                now,
+              });
+            }
           }
 
           const logId = 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
@@ -1910,6 +2072,17 @@
           });
           if (aRef && aSnap && aSnap.exists()) {
             tx.update(aRef, { balance: Number(aSnap.data().balance || 0) + paid, updatedAt: now });
+            recordCashbookEntryTx(tx, bizId, {
+              entryType: 'DUE_COLLECTION',
+              direction: 'IN',
+              amount: paid,
+              accountId: aSnap.id,
+              accountName: aSnap.data().name || '',
+              partyName: c.name || 'Customer',
+              referenceId: customerId,
+              notes: notes || `Due collected from ${c.name}`,
+              now,
+            });
           }
           const logId = 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
           tx.set(
@@ -1932,41 +2105,116 @@
         const bizId = state.currentBusiness.id;
         const now = new Date().toISOString();
         if (editingId) {
-          await updateDoc(doc(db, 'businesses', bizId, 'suppliers', editingId), sanitizeForFirestore({ ...data, updatedAt: now }));
+          const { openingBalance, ...rest } = data;
+          await updateDoc(doc(db, 'businesses', bizId, 'suppliers', editingId), sanitizeForFirestore({ ...rest, updatedAt: now }));
           await logAuditAction('SUPPLIERS', 'UPDATE_SUPPLIER', `Updated supplier "${data.name}"`, editingId);
           showToast('Supplier updated!');
           return editingId;
         } else {
           const id = 'sup_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+          const ob = Math.max(0, Number(data.openingBalance || 0));
           await setDoc(
             doc(db, 'businesses', bizId, 'suppliers', id),
-            sanitizeForFirestore({ id, totalPurchased: 0, totalPaid: 0, currentDue: 0, ...data, createdAt: now, updatedAt: now })
+            sanitizeForFirestore({
+              id,
+              businessId: bizId,
+              totalPurchased: 0,
+              totalPaid: 0,
+              openingBalance: ob,
+              currentDue: ob,
+              ...data,
+              createdAt: now,
+              updatedAt: now,
+            })
           );
-          await logAuditAction('SUPPLIERS', 'ADD_SUPPLIER', `Added supplier "${data.name}"`, id);
+          await logAuditAction('SUPPLIERS', 'ADD_SUPPLIER', `Added supplier "${data.name}"${ob > 0 ? ` (Opening Due: ${state.currentBusiness.currency}${ob})` : ''}`, id);
           showToast('Supplier added!');
           return id;
         }
       }
 
-      async function paySupplier(supplierId, amount, accountId, notes = '') {
+      async function paySupplier(supplierId, amount, accountId, notes = '', options = {}) {
         const bizId = state.currentBusiness.id;
+        const paid = Number(amount || 0);
+        if (!(paid > 0)) throw new Error('Payment amount must be greater than zero');
+        let savedPayment = null;
+
         await runTransaction(db, async (tx) => {
           const sRef = doc(db, 'businesses', bizId, 'suppliers', supplierId);
           const sSnap = await tx.get(sRef);
           if (!sSnap.exists()) throw new Error('Supplier not found');
+
           const aRef = accountId ? doc(db, 'businesses', bizId, 'accounts', accountId) : null;
           const aSnap = aRef ? await tx.get(aRef) : null;
+
+          const purchaseId = options?.purchaseId || '';
+          const purRef = purchaseId ? doc(db, 'businesses', bizId, 'purchases', purchaseId) : null;
+          const purSnap = purRef ? await tx.get(purRef) : null;
+
           const now = new Date().toISOString();
           const s = sSnap.data();
-          const paid = Number(amount);
+          const paymentDate = (options?.date || now.slice(0, 10)).slice(0, 10);
+          const paymentId = 'spay_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+          const paymentNumber = 'SPAY-' + String(Date.now()).slice(-6);
+          const accData = aSnap && aSnap.exists() ? aSnap.data() : null;
+          const billNumber = purSnap && purSnap.exists() ? (purSnap.data().billNumber || options?.billNumber || '') : (options?.billNumber || '');
+
+          savedPayment = sanitizeForFirestore({
+            id: paymentId,
+            paymentNumber,
+            supplierId,
+            supplierName: s.name || 'Supplier',
+            amount: paid,
+            accountId: accData ? aSnap.id : (accountId || ''),
+            accountName: accData ? (accData.name || '') : '',
+            paymentMethod: accData ? (accData.type || 'cash') : 'cash',
+            purchaseId: purSnap && purSnap.exists() ? purchaseId : '',
+            billNumber,
+            date: paymentDate,
+            notes: notes || '',
+            createdBy: state.user.uid,
+            createdByName: state.user.displayName || state.user.email || 'User',
+            createdAt: now,
+          });
+
+          tx.set(doc(db, 'businesses', bizId, 'supplierPayments', paymentId), savedPayment);
+
           tx.update(sRef, {
             currentDue: Math.max(0, Number(s.currentDue || 0) - paid),
             totalPaid: Number(s.totalPaid || 0) + paid,
             updatedAt: now,
           });
+
+          if (purRef && purSnap && purSnap.exists()) {
+            const pd = purSnap.data();
+            const newPaid = Number(pd.paidAmount || 0) + paid;
+            const newDue = Math.max(0, Number(pd.dueAmount ?? (Number(pd.total || 0) - Number(pd.paidAmount || 0))) - paid);
+            const newStatus = newDue <= 0 ? 'PAID' : newPaid > 0 ? 'PARTIAL' : 'DUE';
+            tx.update(purRef, {
+              paidAmount: newPaid,
+              dueAmount: newDue,
+              status: newStatus,
+              updatedAt: now,
+            });
+          }
+
           if (aRef && aSnap && aSnap.exists()) {
             tx.update(aRef, { balance: Number(aSnap.data().balance || 0) - paid, updatedAt: now });
           }
+
+          recordCashbookEntryTx(tx, bizId, {
+            entryType: 'SUPPLIER_PAYMENT',
+            direction: 'OUT',
+            amount: paid,
+            accountId: accData ? aSnap.id : '',
+            accountName: accData ? (accData.name || '') : '',
+            partyName: s.name || 'Supplier',
+            referenceId: billNumber || paymentNumber,
+            notes: notes || (billNumber ? `Payment toward ${billNumber}` : `Payment ${paymentNumber} to ${s.name}`),
+            date: paymentDate,
+            now,
+          });
+
           const logId = 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
           tx.set(
             doc(db, 'businesses', bizId, 'auditLogs', logId),
@@ -1975,22 +2223,41 @@
               userName: state.user.displayName || state.user.email || 'User',
               module: 'SUPPLIERS',
               action: 'PAY_SUPPLIER',
-              details: `Paid ${state.currentBusiness.currency}${paid} to ${s.name}${notes ? ' (' + notes + ')' : ''}`,
+              details: `Paid ${state.currentBusiness.currency}${paid} to ${s.name}${billNumber ? ' for ' + billNumber : ''}${notes ? ' (' + notes + ')' : ''}`,
               targetId: supplierId,
               timestamp: now,
             })
           );
         });
-        showToast('Supplier payment recorded!');
+        showToast('Supplier payment recorded & ledger updated!');
+        return savedPayment;
       }
 
       async function saveAccount(data) {
         const bizId = state.currentBusiness.id;
         const id = 'acc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-        await setDoc(
-          doc(db, 'businesses', bizId, 'accounts', id),
-          sanitizeForFirestore({ id, ...data, createdAt: new Date().toISOString() })
-        );
+        const now = new Date().toISOString();
+        const ob = Number(data.balance || 0);
+        await runTransaction(db, async (tx) => {
+          tx.set(
+            doc(db, 'businesses', bizId, 'accounts', id),
+            sanitizeForFirestore({ id, ...data, balance: ob, createdAt: now })
+          );
+          if (ob > 0) {
+            recordCashbookEntryTx(tx, bizId, {
+              entryType: 'CAPITAL_IN',
+              direction: 'IN',
+              amount: ob,
+              accountId: id,
+              accountName: data.name || '',
+              partyName: 'Opening Balance',
+              referenceId: id,
+              notes: `Opening balance for ${data.name}`,
+              date: now.slice(0, 10),
+              now,
+            });
+          }
+        });
         await logAuditAction('ACCOUNTS', 'ADD_ACCOUNT', `Added ${data.type.toUpperCase()} account "${data.name}"`, id);
         showToast('Account created!');
       }
@@ -2010,6 +2277,28 @@
           const now = new Date().toISOString();
           tx.update(fromRef, { balance: Number(fromSnap.data().balance || 0) - amt, updatedAt: now });
           tx.update(toRef, { balance: Number(toSnap.data().balance || 0) + amt, updatedAt: now });
+          recordCashbookEntryTx(tx, bizId, {
+            entryType: 'TRANSFER_OUT',
+            direction: 'OUT',
+            amount: amt,
+            accountId: fromSnap.id,
+            accountName: fromSnap.data().name || '',
+            partyName: toSnap.data().name || 'Destination Account',
+            referenceId: 'TRF',
+            notes: notes || `Transfer to ${toSnap.data().name}`,
+            now,
+          });
+          recordCashbookEntryTx(tx, bizId, {
+            entryType: 'TRANSFER_IN',
+            direction: 'IN',
+            amount: amt,
+            accountId: toSnap.id,
+            accountName: toSnap.data().name || '',
+            partyName: fromSnap.data().name || 'Source Account',
+            referenceId: 'TRF',
+            notes: notes || `Transfer from ${fromSnap.data().name}`,
+            now,
+          });
           const logId = 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
           tx.set(
             doc(db, 'businesses', bizId, 'auditLogs', logId),
@@ -2033,11 +2322,13 @@
           const aSnap = aRef ? await tx.get(aRef) : null;
           const now = new Date().toISOString();
           const id = 'exp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+          const accName = aSnap && aSnap.exists() ? (aSnap.data().name || '') : '';
           tx.set(
             doc(db, 'businesses', bizId, 'expenses', id),
             sanitizeForFirestore({
               id,
               ...data,
+              accountName: accName,
               amount: Number(data.amount),
               createdBy: state.user.uid,
               createdByName: state.user.displayName || state.user.email || 'User',
@@ -2047,6 +2338,18 @@
           if (aRef && aSnap && aSnap.exists()) {
             tx.update(aRef, { balance: Number(aSnap.data().balance || 0) - Number(data.amount), updatedAt: now });
           }
+          recordCashbookEntryTx(tx, bizId, {
+            entryType: 'EXPENSE',
+            direction: 'OUT',
+            amount: Number(data.amount),
+            accountId: data.accountId || '',
+            accountName: accName,
+            partyName: data.category || 'Expense',
+            referenceId: id,
+            notes: data.title + (data.notes ? ' — ' + data.notes : ''),
+            date: data.date || now.slice(0, 10),
+            now,
+          });
           const logId = 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
           tx.set(
             doc(db, 'businesses', bizId, 'auditLogs', logId),
@@ -2064,8 +2367,9 @@
         showToast('Expense recorded!');
       }
 
-      async function createReturnRecord({ type, referenceId, partyId, partyName, items, totalRefund, accountId, reason }) {
+      async function createReturnRecord({ type, referenceId, partyId, partyName, items, totalRefund, dueAdjusted = null, cashRefund = null, accountId, reason }) {
         const bizId = state.currentBusiness.id;
+        let savedReturn = null;
         await runTransaction(db, async (tx) => {
           const prodSnaps = [];
           for (const it of items) {
@@ -2079,30 +2383,45 @@
             partyRef = doc(db, 'businesses', bizId, type === 'SALE_RETURN' ? 'customers' : 'suppliers', partyId);
             partySnap = await tx.get(partyRef);
           }
+          const totalAmt = Number(totalRefund || 0);
+          const dueAdj = dueAdjusted !== null && dueAdjusted !== undefined ? Math.min(totalAmt, Math.max(0, Number(dueAdjusted))) : 0;
+          const cashRef = cashRefund !== null && cashRefund !== undefined ? Math.max(0, Number(cashRefund)) : Math.max(0, totalAmt - dueAdj);
+
           let accRef = null;
           let accSnap = null;
-          if (accountId && totalRefund > 0) {
+          if (accountId && cashRef > 0) {
             accRef = doc(db, 'businesses', bizId, 'accounts', accountId);
             accSnap = await tx.get(accRef);
           }
 
+          let cogsAmount = 0;
+          items.forEach((it) => {
+            const prod = prodSnaps.find((x) => x.it.productId === it.productId);
+            const cost = Number(it.purchasePrice ?? prod?.snap?.data()?.purchasePrice ?? it.unitCost ?? 0);
+            cogsAmount += cost * Number(it.quantity || 0);
+          });
+
           const now = new Date().toISOString();
           const retId = 'ret_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-          tx.set(
-            doc(db, 'businesses', bizId, 'returns', retId),
-            sanitizeForFirestore({
-              id: retId,
-              type,
-              referenceId,
-              partyId: partyId || '',
-              partyName: partyName || '',
-              items,
-              totalAmount: Number(totalRefund),
-              reason: reason || 'Returned goods',
-              createdBy: state.user.uid,
-              createdAt: now,
-            })
-          );
+          const returnNumber = (type === 'SALE_RETURN' ? 'CRN-' : 'DBN-') + String(Date.now()).slice(-6);
+          savedReturn = sanitizeForFirestore({
+            id: retId,
+            returnNumber,
+            type,
+            referenceId,
+            partyId: partyId || '',
+            partyName: partyName || '',
+            items,
+            totalAmount: totalAmt,
+            dueAdjusted: dueAdj,
+            cashRefund: cashRef,
+            cogsAmount,
+            accountId: accountId || '',
+            reason: reason || 'Returned goods',
+            createdBy: state.user.uid,
+            createdAt: now,
+          });
+          tx.set(doc(db, 'businesses', bizId, 'returns', retId), savedReturn);
 
           for (const { ref: pRef, snap, it } of prodSnaps) {
             const prev = Number(snap.data().currentStock || 0);
@@ -2119,7 +2438,7 @@
                 previousStock: prev,
                 newStock: next,
                 referenceType: 'RETURN',
-                referenceId,
+                referenceId: returnNumber,
                 notes: `${type === 'SALE_RETURN' ? 'Sales Return' : 'Purchase Return'} (${referenceId})`,
                 createdBy: state.user.uid,
                 createdAt: now,
@@ -2127,18 +2446,29 @@
             );
           }
 
-          if (partyRef && partySnap && partySnap.exists()) {
+          if (partyRef && partySnap && partySnap.exists() && dueAdj > 0) {
             const pd = partySnap.data();
             tx.update(partyRef, {
-              currentDue: Math.max(0, Number(pd.currentDue || 0) - Number(totalRefund)),
+              currentDue: Math.max(0, Number(pd.currentDue || 0) - dueAdj),
               updatedAt: now,
             });
           }
-          if (accRef && accSnap && accSnap.exists()) {
+          if (accRef && accSnap && accSnap.exists() && cashRef > 0) {
             const cur = Number(accSnap.data().balance || 0);
             tx.update(accRef, {
-              balance: type === 'SALE_RETURN' ? cur - Number(totalRefund) : cur + Number(totalRefund),
+              balance: type === 'SALE_RETURN' ? cur - cashRef : cur + cashRef,
               updatedAt: now,
+            });
+            recordCashbookEntryTx(tx, bizId, {
+              entryType: type,
+              direction: type === 'SALE_RETURN' ? 'OUT' : 'IN',
+              amount: cashRef,
+              accountId: accSnap.id,
+              accountName: accSnap.data().name || '',
+              partyName: partyName || 'Party',
+              referenceId: returnNumber,
+              notes: `${type === 'SALE_RETURN' ? 'Refunded on' : 'Refund received on'} ${referenceId}`,
+              now,
             });
           }
           const logId = 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
@@ -2149,13 +2479,14 @@
               userName: state.user.displayName || state.user.email || 'User',
               module: type === 'SALE_RETURN' ? 'SALES' : 'PURCHASES',
               action: type,
-              details: `${type} on ${referenceId} (${state.currentBusiness.currency}${totalRefund})`,
+              details: `${returnNumber} (${type}) on ${referenceId} (${state.currentBusiness.currency}${totalAmt})`,
               targetId: retId,
               timestamp: now,
             })
           );
         });
         showToast('Return processed & stock adjusted!');
+        return savedReturn;
       }
 
       async function saveMember(uid, name, email, role) {
@@ -2547,6 +2878,7 @@
           { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard', show: true },
           { id: 'sales', label: 'Sales & POS', icon: 'shopping-cart', show: perms.canCreateSales },
           { id: 'purchases', label: 'Purchases', icon: 'truck', show: perms.canCreatePurchases },
+          { id: 'returns', label: 'Returns & Refunds', icon: 'rotate-ccw', show: perms.canCreateSales || perms.canCreatePurchases },
           { id: 'products', label: 'Products & Stock', icon: 'package', show: true, badge: m.lowStockCount > 0 ? m.lowStockCount : null },
           { id: 'customers', label: 'Customers & Dues', icon: 'users', show: true },
           { id: 'suppliers', label: 'Suppliers', icon: 'factory', show: true },
@@ -3710,58 +4042,470 @@
         `;
       }
 
+      function getSupplierLedgerData(sup) {
+        const purchases = state.purchases
+          .filter((p) => p.supplierId === sup.id || (!p.supplierId && p.supplierName === sup.name))
+          .slice()
+          .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+        const directPayments = state.supplierPayments
+          .filter((sp) => sp.supplierId === sup.id)
+          .slice()
+          .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+        const returns = state.returns
+          .filter((r) => r.type === 'PURCHASE_RETURN' && (r.partyId === sup.id || (!r.partyId && r.partyName === sup.name)))
+          .slice()
+          .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+        // Build unified payment history (upfront payments on bills + subsequent supplierPayments + legacy cashbook fallback)
+        const paymentEvents = [];
+        directPayments.forEach((sp) => {
+          paymentEvents.push({
+            id: sp.id,
+            ref: sp.paymentNumber || sp.id,
+            source: 'SUPPLIER_PAYMENT',
+            date: sp.date || (sp.createdAt || '').slice(0, 10),
+            createdAt: sp.createdAt || (sp.date ? sp.date + 'T12:00:00Z' : ''),
+            amount: Number(sp.amount || 0),
+            accountName: sp.accountName || sp.paymentMethod || 'Cash/Bank',
+            billNumber: sp.billNumber || '',
+            purchaseId: sp.purchaseId || '',
+            notes: sp.notes || (sp.billNumber ? `Bill settlement (${sp.billNumber})` : 'Account payment'),
+            createdByName: sp.createdByName || '',
+          });
+        });
+
+        purchases.forEach((p) => {
+          const linkedSum = directPayments
+            .filter((sp) => sp.purchaseId === p.id)
+            .reduce((sum, sp) => sum + Number(sp.amount || 0), 0);
+          const initialPaid =
+            p.initialPaidAmount !== undefined && p.initialPaidAmount !== null
+              ? Number(p.initialPaidAmount || 0)
+              : Math.max(0, Number(p.paidAmount || 0) - linkedSum);
+          if (initialPaid > 0) {
+            const acc = state.accounts.find((a) => a.id === p.accountId);
+            paymentEvents.push({
+              id: 'init_' + p.id,
+              ref: p.billNumber || p.id,
+              source: 'PURCHASE_UPFRONT',
+              date: (p.createdAt || '').slice(0, 10),
+              createdAt: p.createdAt || '',
+              amount: initialPaid,
+              accountName: acc?.name || p.paymentMethod || 'Cash',
+              billNumber: p.billNumber || '',
+              purchaseId: p.id,
+              notes: `Paid at purchase (${p.billNumber || 'Bill'})`,
+              createdByName: p.createdByName || '',
+            });
+          }
+        });
+
+        // Legacy cashbook fallback (entries recorded before supplierPayments subcollection existed)
+        state.cashbook
+          .filter(
+            (cb) =>
+              cb.entryType === 'SUPPLIER_PAYMENT' &&
+              (cb.referenceId === sup.id || cb.partyName === sup.name) &&
+              !directPayments.some((sp) => sp.createdAt === cb.createdAt || sp.paymentNumber === cb.referenceId)
+          )
+          .forEach((cb) => {
+            paymentEvents.push({
+              id: cb.id,
+              ref: cb.referenceId || cb.id,
+              source: 'LEGACY_CASHBOOK',
+              date: cb.date || (cb.createdAt || '').slice(0, 10),
+              createdAt: cb.createdAt || '',
+              amount: Number(cb.amount || 0),
+              accountName: cb.accountName || 'Cash/Bank',
+              billNumber: cb.referenceId && String(cb.referenceId).startsWith('PUR-') ? cb.referenceId : '',
+              purchaseId: '',
+              notes: cb.notes || 'Supplier payment',
+              createdByName: cb.createdByName || '',
+            });
+          });
+
+        paymentEvents.sort((a, b) => String(b.createdAt || b.date || '').localeCompare(String(a.createdAt || a.date || '')));
+
+        // Build chronological statement events to calculate exact running balance due
+        const timeline = [];
+        const ob = Number(sup.openingBalance || 0);
+        if (ob > 0) {
+          timeline.push({
+            id: 'ob_' + sup.id,
+            kind: 'OPENING',
+            ref: 'OPENING',
+            date: (sup.createdAt || '').slice(0, 10) || '-',
+            sortAt: sup.createdAt || '0000-01-01T00:00:00.000Z',
+            description: 'Opening Balance Payable',
+            subtext: sup.notes || 'Initial payable balance carried forward',
+            billed: ob,
+            paid: 0,
+            returnedDue: 0,
+            delta: ob,
+          });
+        }
+
+        purchases.forEach((p) => {
+          const itemPreview = (p.items || [])
+            .slice(0, 2)
+            .map((it) => `${it.productName} ×${it.quantity}`)
+            .join(', ');
+          const extra = (p.items || []).length > 2 ? ` +${p.items.length - 2} more` : '';
+          timeline.push({
+            id: 'bill_' + p.id,
+            kind: 'PURCHASE',
+            ref: p.billNumber || p.id,
+            purchaseId: p.id,
+            date: (p.createdAt || '').slice(0, 10),
+            sortAt: p.createdAt || '',
+            description: `Purchase Bill ${p.billNumber || ''}`,
+            subtext: itemPreview + extra || 'Stock purchase',
+            billed: Number(p.total || 0),
+            paid: 0,
+            returnedDue: 0,
+            delta: Number(p.total || 0),
+          });
+        });
+
+        paymentEvents.forEach((pm) => {
+          // Ensure upfront payments sort immediately after their bill on same timestamp
+          const sortAt = pm.source === 'PURCHASE_UPFRONT' ? (pm.createdAt || '') + '_1' : (pm.createdAt || pm.date || '') + '_2';
+          timeline.push({
+            id: 'pay_' + pm.id,
+            kind: 'PAYMENT',
+            ref: pm.ref,
+            date: pm.date,
+            sortAt,
+            description: pm.source === 'PURCHASE_UPFRONT' ? `Paid with Bill ${pm.billNumber}` : `Payment ${pm.ref}`,
+            subtext: `${pm.accountName}${pm.notes ? ' • ' + pm.notes : ''}`,
+            billed: 0,
+            paid: Number(pm.amount || 0),
+            returnedDue: 0,
+            delta: -Number(pm.amount || 0),
+          });
+        });
+
+        returns.forEach((r) => {
+          const adj = Number(r.dueAdjusted || 0);
+          const cashRef = Number(r.cashRefund || 0);
+          timeline.push({
+            id: 'ret_' + r.id,
+            kind: 'RETURN',
+            ref: r.returnNumber || r.id,
+            date: (r.createdAt || '').slice(0, 10),
+            sortAt: (r.createdAt || '') + '_3',
+            description: `Purchase Return ${r.returnNumber || ''}`,
+            subtext: `${r.referenceId ? 'Ref: ' + r.referenceId + ' • ' : ''}Total: ${r.totalAmount || r.totalRefund || 0}${cashRef > 0 ? ' (Cash Refund: ' + cashRef + ')' : ''}`,
+            billed: 0,
+            paid: 0,
+            returnedDue: adj,
+            delta: -adj,
+          });
+        });
+
+        timeline.sort((a, b) => String(a.sortAt).localeCompare(String(b.sortAt)));
+        let running = 0;
+        const statementRows = timeline.map((row) => {
+          running = Math.max(0, running + row.delta);
+          return { ...row, runningBalance: running };
+        });
+
+        const totalPurchased = purchases.reduce((s, p) => s + Number(p.total || 0), 0) + ob;
+        const totalPaidAll = paymentEvents.reduce((s, p) => s + Number(p.amount || 0), 0);
+        const totalReturnedDueAdj = returns.reduce((s, r) => s + Number(r.dueAdjusted || 0), 0);
+        const totalReturnedAll = returns.reduce((s, r) => s + Number(r.totalAmount || r.totalRefund || 0), 0);
+        const currentDue = Number(sup.currentDue ?? Math.max(0, totalPurchased - totalPaidAll - totalReturnedDueAdj));
+        const lastActivity = statementRows.length > 0 ? statementRows[statementRows.length - 1].date : (sup.createdAt || '').slice(0, 10);
+
+        return {
+          purchases,
+          payments: paymentEvents,
+          returns,
+          statementRows,
+          summary: {
+            openingBalance: ob,
+            totalPurchased,
+            totalPaidAll,
+            totalReturnedDueAdj,
+            totalReturnedAll,
+            currentDue,
+            billCount: purchases.length,
+            paymentCount: paymentEvents.length,
+            returnCount: returns.length,
+            lastActivity,
+          },
+        };
+      }
+
       function renderSuppliersView() {
         const c = state.currentBusiness.currency || '৳';
         const q = state.suppliersSearch.toLowerCase();
-        const list = state.suppliers.filter(
-          (x) => (x.name || '').toLowerCase().includes(q) || (x.phone || '').toLowerCase().includes(q)
-        );
-        const totalPay = state.suppliers.reduce((s, x) => s + (x.currentDue || 0), 0);
+        const f = state.suppliersFilter || 'ALL';
+        const sortBy = state.suppliersSort || 'NAME';
+
+        let list = state.suppliers.filter((x) => {
+          const matchQ =
+            (x.name || '').toLowerCase().includes(q) ||
+            (x.phone || '').toLowerCase().includes(q) ||
+            (x.company || '').toLowerCase().includes(q) ||
+            (x.address || '').toLowerCase().includes(q);
+          const due = Number(x.currentDue || 0);
+          const matchF = f === 'ALL' || (f === 'DUE' ? due > 0 : due <= 0);
+          return matchQ && matchF;
+        });
+
+        if (sortBy === 'DUE_DESC') {
+          list = list.slice().sort((a, b) => Number(b.currentDue || 0) - Number(a.currentDue || 0));
+        } else if (sortBy === 'VOLUME_DESC') {
+          list = list.slice().sort((a, b) => Number(b.totalPurchased || 0) - Number(a.totalPurchased || 0));
+        } else {
+          list = list.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+        }
+
+        const totalPurchasedAll = state.suppliers.reduce((s, x) => s + Number(x.totalPurchased || 0) + Number(x.openingBalance || 0), 0);
+        const totalPaidAll = state.suppliers.reduce((s, x) => s + Number(x.totalPaid || 0), 0);
+        const totalPay = state.suppliers.reduce((s, x) => s + Number(x.currentDue || 0), 0);
+        const dueSupplierCount = state.suppliers.filter((x) => Number(x.currentDue || 0) > 0).length;
 
         return `
           <div class="space-y-6 animate-fade-in">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h1 class="text-2xl font-extrabold text-slate-900">Suppliers & Payables</h1>
-                <p class="text-xs text-slate-600">Total Payables Owed: <strong class="text-rose-700">${fmtMoney(totalPay, c)}</strong></p>
+                <h1 class="text-2xl font-extrabold text-slate-900">Suppliers, Payables & Ledgers</h1>
+                <p class="text-xs text-slate-600">Track purchase bills, payment history, returns, and real-time supplier statements</p>
               </div>
-              <button type="button" id="btn-add-supplier" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold">+ Add Supplier</button>
+              <div class="flex flex-wrap gap-2">
+                <button type="button" id="btn-export-suppliers-csv" class="px-3.5 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold">Export CSV</button>
+                <button type="button" id="btn-add-supplier" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shadow-sm">+ Add Supplier</button>
+              </div>
             </div>
 
-            <div class="dms-card rounded-2xl p-4">
-              <input id="sup-search-input" type="text" value="${esc(state.suppliersSearch)}" placeholder="Search suppliers by name or phone..." class="w-full px-3.5 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs text-slate-900" />
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div class="dms-card rounded-2xl p-4 border-l-4 border-l-sky-500">
+                <div class="text-[11px] font-bold text-slate-500 uppercase">Total Suppliers</div>
+                <div class="text-2xl font-extrabold text-slate-900 mt-1">${state.suppliers.length}</div>
+                <div class="text-[11px] text-slate-500 mt-0.5">${dueSupplierCount} with pending dues</div>
+              </div>
+              <div class="dms-card rounded-2xl p-4 border-l-4 border-l-indigo-500">
+                <div class="text-[11px] font-bold text-slate-500 uppercase">Total Purchased</div>
+                <div class="text-2xl font-extrabold text-slate-900 mt-1">${fmtMoney(totalPurchasedAll, c)}</div>
+                <div class="text-[11px] text-slate-500 mt-0.5">${state.purchases.length} purchase bills</div>
+              </div>
+              <div class="dms-card rounded-2xl p-4 border-l-4 border-l-emerald-500">
+                <div class="text-[11px] font-bold text-slate-500 uppercase">Total Paid</div>
+                <div class="text-2xl font-extrabold text-emerald-700 mt-1">${fmtMoney(totalPaidAll, c)}</div>
+                <div class="text-[11px] text-slate-500 mt-0.5">${state.supplierPayments.length} direct settlements</div>
+              </div>
+              <div class="dms-card rounded-2xl p-4 border-l-4 border-l-rose-500">
+                <div class="text-[11px] font-bold text-slate-500 uppercase">Outstanding Dues</div>
+                <div class="text-2xl font-extrabold text-rose-700 mt-1">${fmtMoney(totalPay, c)}</div>
+                <div class="text-[11px] text-slate-500 mt-0.5">Net payable balance</div>
+              </div>
+            </div>
+
+            <div class="dms-card rounded-2xl p-4 flex flex-wrap gap-3">
+              <input id="sup-search-input" type="text" value="${esc(state.suppliersSearch)}" placeholder="Search suppliers by name, phone, company, or address..." class="flex-1 min-w-[220px] px-3.5 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs text-slate-900" />
+              <select id="sup-filter-select" class="px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs font-semibold">
+                <option value="ALL" ${f === 'ALL' ? 'selected' : ''}>All Suppliers</option>
+                <option value="DUE" ${f === 'DUE' ? 'selected' : ''}>With Outstanding Dues</option>
+                <option value="SETTLED" ${f === 'SETTLED' ? 'selected' : ''}>Settled (Zero Due)</option>
+              </select>
+              <select id="sup-sort-select" class="px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs font-semibold">
+                <option value="NAME" ${sortBy === 'NAME' ? 'selected' : ''}>Sort: Name (A-Z)</option>
+                <option value="DUE_DESC" ${sortBy === 'DUE_DESC' ? 'selected' : ''}>Sort: Highest Due</option>
+                <option value="VOLUME_DESC" ${sortBy === 'VOLUME_DESC' ? 'selected' : ''}>Sort: Highest Volume</option>
+              </select>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               ${
                 list.length === 0
-                  ? `<div class="col-span-full dms-card rounded-2xl p-10 text-center text-xs text-slate-500">No suppliers found.</div>`
+                  ? `<div class="col-span-full dms-card rounded-2xl p-10 text-center text-xs text-slate-500">No suppliers found matching your filter.</div>`
                   : list
-                      .map(
-                        (sup) => `
-                        <div class="dms-card rounded-2xl p-5 space-y-3">
-                          <div class="flex items-start justify-between gap-2">
-                            <div>
-                              <div class="font-extrabold text-sm text-slate-900">${esc(sup.name)}</div>
-                              <div class="text-xs text-slate-500">${esc(sup.phone || 'No phone')} ${sup.company ? '• ' + esc(sup.company) : ''}</div>
+                      .map((sup) => {
+                        const ledger = getSupplierLedgerData(sup);
+                        const sm = ledger.summary;
+                        return `
+                        <div class="dms-card rounded-2xl p-5 space-y-3 flex flex-col justify-between">
+                          <div class="space-y-3">
+                            <div class="flex items-start justify-between gap-2">
+                              <div class="min-w-0">
+                                <div class="font-extrabold text-sm text-slate-900 truncate">${esc(sup.name)}</div>
+                                <div class="text-xs text-slate-500 truncate">${esc(sup.phone || 'No phone')}${sup.company ? ' • ' + esc(sup.company) : ''}</div>
+                                ${sup.address ? `<div class="text-[11px] text-slate-400 truncate mt-0.5">${esc(sup.address)}</div>` : ''}
+                              </div>
+                              <span class="shrink-0 px-2.5 py-1 rounded-lg text-xs font-bold ${sm.currentDue > 0 ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}">
+                                Due: ${fmtMoney(sm.currentDue, c)}
+                              </span>
                             </div>
-                            <span class="px-2.5 py-1 rounded-lg text-xs font-bold ${(sup.currentDue || 0) > 0 ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}">
-                              Payable: ${fmtMoney(sup.currentDue || 0, c)}
-                            </span>
+
+                            <div class="grid grid-cols-3 gap-2 pt-2.5 border-t border-slate-100 text-[11px]">
+                              <div>
+                                <div class="text-slate-400">Purchased</div>
+                                <div class="font-extrabold text-slate-900">${fmtMoney(sm.totalPurchased, c)}</div>
+                              </div>
+                              <div>
+                                <div class="text-slate-400">Paid</div>
+                                <div class="font-extrabold text-emerald-700">${fmtMoney(sm.totalPaidAll, c)}</div>
+                              </div>
+                              <div>
+                                <div class="text-slate-400">Bills / Pays</div>
+                                <div class="font-bold text-slate-700">${sm.billCount} / ${sm.paymentCount}</div>
+                              </div>
+                            </div>
+                            ${
+                              sm.returnCount > 0 || sm.lastActivity
+                                ? `<div class="flex items-center justify-between text-[10px] text-slate-400">
+                                    <span>${sm.returnCount > 0 ? `Returns: ${sm.returnCount} (${fmtMoney(sm.totalReturnedDueAdj, c)} adj)` : 'No returns'}</span>
+                                    <span>Last: ${esc(sm.lastActivity || '-')}</span>
+                                  </div>`
+                                : ''
+                            }
                           </div>
-                          <div class="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 text-[11px]">
-                            <div><span class="text-slate-500">Purchased:</span> <strong class="text-slate-900">${fmtMoney(sup.totalPurchased || 0, c)}</strong></div>
-                            <div><span class="text-slate-500">Paid:</span> <strong class="text-emerald-700">${fmtMoney(sup.totalPaid || 0, c)}</strong></div>
+
+                          <div class="flex flex-wrap gap-1.5 pt-2 border-t border-slate-100">
+                            <button type="button" data-ledger-sup="${esc(sup.id)}" class="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold">Detailed Ledger</button>
+                            <button type="button" data-pay-sup="${esc(sup.id)}" class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold">Pay Due</button>
+                            <button type="button" data-purchase-sup="${esc(sup.id)}" class="px-3 py-1.5 rounded-xl bg-sky-50 text-sky-700 hover:bg-sky-100 text-[11px] font-bold">+ Bill</button>
+                            <button type="button" data-edit-sup="${esc(sup.id)}" class="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200 text-[11px] font-bold">Edit</button>
                           </div>
-                          <div class="flex flex-wrap gap-1.5 pt-2">
-                            <button type="button" data-pay-sup="${esc(sup.id)}" class="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold">Pay Due</button>
-                            <button type="button" data-ledger-sup="${esc(sup.id)}" class="px-3 py-1.5 rounded-xl bg-sky-50 text-sky-700 text-[11px] font-bold">Ledger</button>
-                            <button type="button" data-edit-sup="${esc(sup.id)}" class="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 text-[11px] font-bold">Edit</button>
-                          </div>
-                        </div>`
-                      )
+                        </div>`;
+                      })
                       .join('')
               }
+            </div>
+          </div>
+        `;
+      }
+
+      function renderReturnsView() {
+        const c = state.currentBusiness.currency || '৳';
+        const perms = getPermissions();
+        const q = state.returnsSearch.toLowerCase();
+        const list = state.returns.filter((r) => {
+          const matchQ =
+            (r.returnNumber || '').toLowerCase().includes(q) ||
+            (r.referenceId || '').toLowerCase().includes(q) ||
+            (r.partyName || '').toLowerCase().includes(q) ||
+            (r.reason || '').toLowerCase().includes(q);
+          const matchT = state.returnsTypeFilter === 'ALL' || r.type === state.returnsTypeFilter;
+          return matchQ && matchT;
+        });
+
+        const saleRets = state.returns.filter((r) => r.type === 'SALE_RETURN');
+        const purRets = state.returns.filter((r) => r.type === 'PURCHASE_RETURN');
+        const saleRetSum = saleRets.reduce((s, r) => s + Number(r.totalAmount || r.totalRefund || 0), 0);
+        const purRetSum = purRets.reduce((s, r) => s + Number(r.totalAmount || r.totalRefund || 0), 0);
+        const totalCashRefunded = saleRets.reduce((s, r) => s + Number(r.cashRefund ?? r.totalAmount ?? 0), 0);
+        const totalCashRecovered = purRets.reduce((s, r) => s + Number(r.cashRefund ?? r.totalAmount ?? 0), 0);
+
+        return `
+          <div class="space-y-6 animate-fade-in">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h1 class="text-2xl font-extrabold text-slate-900">Returns, Credit Notes & Refunds</h1>
+                <p class="text-xs text-slate-600">Process partial or full Sales Returns (Customer) and Purchase Returns (Supplier) with automatic stock & ledger sync</p>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                ${
+                  perms.canCreateSales
+                    ? `<button type="button" id="btn-new-sale-return" class="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-sm">+ Sales Return</button>`
+                    : ''
+                }
+                ${
+                  perms.canCreatePurchases
+                    ? `<button type="button" id="btn-new-purchase-return" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shadow-sm">+ Purchase Return</button>`
+                    : ''
+                }
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div class="dms-card rounded-2xl p-5 border-l-4 border-l-amber-500">
+                <div class="text-xs font-bold text-slate-500 uppercase">Sales Returns (Credit Notes)</div>
+                <div class="text-2xl font-extrabold text-amber-700 mt-1">${fmtMoney(saleRetSum, c)}</div>
+                <div class="text-[11px] text-slate-500 mt-1">${saleRets.length} return(s)</div>
+              </div>
+              <div class="dms-card rounded-2xl p-5 border-l-4 border-l-sky-500">
+                <div class="text-xs font-bold text-slate-500 uppercase">Purchase Returns (Debit Notes)</div>
+                <div class="text-2xl font-extrabold text-sky-700 mt-1">${fmtMoney(purRetSum, c)}</div>
+                <div class="text-[11px] text-slate-500 mt-1">${purRets.length} return(s)</div>
+              </div>
+              <div class="dms-card rounded-2xl p-5 border-l-4 border-l-rose-500">
+                <div class="text-xs font-bold text-slate-500 uppercase">Cash Refunded to Customers</div>
+                <div class="text-2xl font-extrabold text-rose-700 mt-1">${fmtMoney(totalCashRefunded, c)}</div>
+              </div>
+              <div class="dms-card rounded-2xl p-5 border-l-4 border-l-emerald-500">
+                <div class="text-xs font-bold text-slate-500 uppercase">Cash Recovered from Suppliers</div>
+                <div class="text-2xl font-extrabold text-emerald-700 mt-1">${fmtMoney(totalCashRecovered, c)}</div>
+              </div>
+            </div>
+
+            <div class="dms-card rounded-2xl p-4 flex flex-wrap gap-3">
+              <input id="ret-search-input" type="text" value="${esc(state.returnsSearch)}" placeholder="Search by return #, invoice/bill #, customer, supplier, or reason..." class="flex-1 min-w-[220px] px-3.5 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs" />
+              <select id="ret-type-filter" class="px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs font-semibold">
+                <option value="ALL" ${state.returnsTypeFilter === 'ALL' ? 'selected' : ''}>All Return Types</option>
+                <option value="SALE_RETURN" ${state.returnsTypeFilter === 'SALE_RETURN' ? 'selected' : ''}>Sales Returns (Customer)</option>
+                <option value="PURCHASE_RETURN" ${state.returnsTypeFilter === 'PURCHASE_RETURN' ? 'selected' : ''}>Purchase Returns (Supplier)</option>
+              </select>
+            </div>
+
+            <div class="dms-card rounded-2xl overflow-hidden">
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left">
+                  <thead class="bg-slate-50 text-slate-600 uppercase text-[10px]">
+                    <tr>
+                      <th class="px-4 py-3">Return #</th>
+                      <th class="px-4 py-3">Type</th>
+                      <th class="px-4 py-3">Ref Invoice/Bill</th>
+                      <th class="px-4 py-3">Party</th>
+                      <th class="px-4 py-3">Items</th>
+                      <th class="px-4 py-3">Cash / Due Adj</th>
+                      <th class="px-4 py-3">Total Value</th>
+                      <th class="px-4 py-3">Date</th>
+                      <th class="px-4 py-3 text-right">Note</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-100">
+                    ${
+                      list.length === 0
+                        ? `<tr><td colspan="9" class="px-4 py-10 text-center text-slate-500">No return records found. Click "+ Sales Return" or "+ Purchase Return" to record a return.</td></tr>`
+                        : list
+                            .map((r) => {
+                              const isSaleRet = r.type === 'SALE_RETURN';
+                              const itemsTxt = (r.items || []).map((it) => `${it.productName} ×${it.quantity}`).join(', ');
+                              const tot = Number(r.totalAmount || r.totalRefund || 0);
+                              const cashRef = Number(r.cashRefund ?? tot);
+                              const dueAdj = Number(r.dueAdjusted ?? 0);
+                              return `
+                                <tr class="hover:bg-sky-50/40">
+                                  <td class="px-4 py-3 font-bold text-slate-900">${esc(r.returnNumber || r.id.slice(-8))}</td>
+                                  <td class="px-4 py-3">
+                                    <span class="px-2 py-0.5 rounded-md text-[10px] font-bold ${isSaleRet ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-sky-50 text-sky-700 border border-sky-200'}">
+                                      ${isSaleRet ? 'SALE RETURN' : 'PURCHASE RETURN'}
+                                    </span>
+                                  </td>
+                                  <td class="px-4 py-3 font-mono font-semibold text-slate-700">${esc(r.referenceId || 'DIRECT')}</td>
+                                  <td class="px-4 py-3 font-semibold text-slate-900">${esc(r.partyName || '-')}</td>
+                                  <td class="px-4 py-3 text-slate-600 max-w-[200px] truncate" title="${esc(itemsTxt)}">${esc(itemsTxt || '-')}</td>
+                                  <td class="px-4 py-3 text-[11px]">
+                                    <span class="text-rose-700 font-semibold">${fmtMoney(cashRef, c)}</span> /
+                                    <span class="text-emerald-700 font-semibold">${fmtMoney(dueAdj, c)}</span>
+                                  </td>
+                                  <td class="px-4 py-3 font-extrabold text-slate-900">${fmtMoney(tot, c)}</td>
+                                  <td class="px-4 py-3 text-slate-500">${esc((r.createdAt || '').slice(0, 10))}</td>
+                                  <td class="px-4 py-3 text-right">
+                                    <button type="button" data-print-return="${esc(r.id)}" class="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-sky-100 text-slate-700 hover:text-sky-800 font-bold">Print</button>
+                                  </td>
+                                </tr>`;
+                            })
+                            .join('')
+                    }
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         `;
@@ -3771,50 +4515,145 @@
         const c = state.currentBusiness.currency || '৳';
         const m = computeMetrics();
         const total = m.cashBalance + m.bankBalance + m.mfsBalance;
+        const q = state.cashbookSearch.toLowerCase();
+        const cbList = state.cashbook.filter((e) => {
+          const matchD = state.cashbookFilterType === 'ALL' || e.direction === state.cashbookFilterType;
+          const matchQ =
+            (e.entryType || '').toLowerCase().includes(q) ||
+            (e.accountName || '').toLowerCase().includes(q) ||
+            (e.partyName || '').toLowerCase().includes(q) ||
+            (e.notes || '').toLowerCase().includes(q) ||
+            (e.referenceId || '').toLowerCase().includes(q);
+          return matchD && matchQ;
+        });
+        const totalIn = cbList.filter((e) => e.direction === 'IN').reduce((s, e) => s + Number(e.amount || 0), 0);
+        const totalOut = cbList.filter((e) => e.direction === 'OUT').reduce((s, e) => s + Number(e.amount || 0), 0);
 
         return `
           <div class="space-y-6 animate-fade-in">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h1 class="text-2xl font-extrabold text-slate-900">Cash, Bank & MFS Accounts</h1>
-                <p class="text-xs text-slate-600">Total Liquid Funds: <strong class="text-emerald-700">${fmtMoney(total, c)}</strong></p>
+                <h1 class="text-2xl font-extrabold text-slate-900">Cash, Bank & Bookkeeping Ledger</h1>
+                <p class="text-xs text-slate-600">Total Liquid Funds: <strong class="text-emerald-700">${fmtMoney(total, c)}</strong> • Capital: <strong>${fmtMoney(m.ownerCapitalTotal, c)}</strong> • Drawings: <strong class="text-rose-700">${fmtMoney(m.ownerDrawingsTotal, c)}</strong></p>
               </div>
-              <div class="flex gap-2">
-                <button type="button" id="btn-transfer-funds" class="px-4 py-2 rounded-xl bg-white border border-slate-200 text-slate-800 text-xs font-bold hover:bg-slate-50">Transfer Funds</button>
-                <button type="button" id="btn-add-account" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold">+ Add Account</button>
-              </div>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div class="dms-card rounded-2xl p-5 border-l-4 border-l-emerald-500">
-                <div class="text-xs font-bold text-slate-500 uppercase">Cash in Hand</div>
-                <div class="text-2xl font-extrabold text-slate-900 mt-1">${fmtMoney(m.cashBalance, c)}</div>
-              </div>
-              <div class="dms-card rounded-2xl p-5 border-l-4 border-l-sky-500">
-                <div class="text-xs font-bold text-slate-500 uppercase">Bank Accounts</div>
-                <div class="text-2xl font-extrabold text-sky-700 mt-1">${fmtMoney(m.bankBalance, c)}</div>
-              </div>
-              <div class="dms-card rounded-2xl p-5 border-l-4 border-l-pink-500">
-                <div class="text-xs font-bold text-slate-500 uppercase">MFS (bKash / Nagad)</div>
-                <div class="text-2xl font-extrabold text-pink-700 mt-1">${fmtMoney(m.mfsBalance, c)}</div>
+              <div class="flex flex-wrap gap-2">
+                <button type="button" id="btn-record-capital" class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold">+ Capital / Loan</button>
+                <button type="button" id="btn-record-other-income" class="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold">+ Other Income</button>
+                <button type="button" id="btn-record-drawing" class="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold">Owner Drawing</button>
+                <button type="button" id="btn-transfer-funds" class="px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-slate-800 text-xs font-bold hover:bg-slate-50">Transfer</button>
+                <button type="button" id="btn-add-account" class="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold">+ Account</button>
               </div>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              ${state.accounts
-                .map(
-                  (a) => `
-                  <div class="dms-card rounded-2xl p-5 space-y-2">
-                    <div class="flex items-center justify-between">
-                      <span class="px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 text-[10px] font-bold uppercase">${esc(a.type)}</span>
-                      <span class="text-[11px] text-slate-400">${esc(a.accountNumber || '')}</span>
+            <div class="flex bg-white border border-slate-200 p-1 rounded-xl text-xs font-bold w-fit">
+              <button type="button" data-acc-tab="accounts" class="px-4 py-2 rounded-lg ${state.accountsTab === 'accounts' ? 'bg-sky-600 text-white' : 'text-slate-600 hover:text-slate-900'}">Accounts & Balances</button>
+              <button type="button" data-acc-tab="cashbook" class="px-4 py-2 rounded-lg ${state.accountsTab === 'cashbook' ? 'bg-sky-600 text-white' : 'text-slate-600 hover:text-slate-900'}">Cashbook / Daybook (${state.cashbook.length})</button>
+            </div>
+
+            ${
+              state.accountsTab === 'accounts'
+                ? `<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="dms-card rounded-2xl p-5 border-l-4 border-l-emerald-500">
+                      <div class="text-xs font-bold text-slate-500 uppercase">Cash in Hand</div>
+                      <div class="text-2xl font-extrabold text-slate-900 mt-1">${fmtMoney(m.cashBalance, c)}</div>
                     </div>
-                    <div class="font-extrabold text-base text-slate-900">${esc(a.name)}</div>
-                    <div class="text-2xl font-extrabold text-emerald-700">${fmtMoney(a.balance || 0, c)}</div>
+                    <div class="dms-card rounded-2xl p-5 border-l-4 border-l-sky-500">
+                      <div class="text-xs font-bold text-slate-500 uppercase">Bank Accounts</div>
+                      <div class="text-2xl font-extrabold text-sky-700 mt-1">${fmtMoney(m.bankBalance, c)}</div>
+                    </div>
+                    <div class="dms-card rounded-2xl p-5 border-l-4 border-l-pink-500">
+                      <div class="text-xs font-bold text-slate-500 uppercase">MFS (bKash / Nagad)</div>
+                      <div class="text-2xl font-extrabold text-pink-700 mt-1">${fmtMoney(m.mfsBalance, c)}</div>
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    ${state.accounts
+                      .map(
+                        (a) => `
+                        <div class="dms-card rounded-2xl p-5 space-y-2">
+                          <div class="flex items-center justify-between">
+                            <span class="px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 text-[10px] font-bold uppercase">${esc(a.type)}</span>
+                            <span class="text-[11px] text-slate-400">${esc(a.accountNumber || '')}</span>
+                          </div>
+                          <div class="font-extrabold text-base text-slate-900">${esc(a.name)}</div>
+                          <div class="text-2xl font-extrabold text-emerald-700">${fmtMoney(a.balance || 0, c)}</div>
+                        </div>`
+                      )
+                      .join('')}
                   </div>`
-                )
-                .join('')}
-            </div>
+                : `<div class="space-y-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div class="dms-card rounded-2xl p-4 border-l-4 border-l-emerald-500">
+                        <div class="text-[11px] font-bold text-slate-500 uppercase">Total Cash Inflow</div>
+                        <div class="text-xl font-extrabold text-emerald-700 mt-1">+${fmtMoney(totalIn, c)}</div>
+                      </div>
+                      <div class="dms-card rounded-2xl p-4 border-l-4 border-l-rose-500">
+                        <div class="text-[11px] font-bold text-slate-500 uppercase">Total Cash Outflow</div>
+                        <div class="text-xl font-extrabold text-rose-700 mt-1">-${fmtMoney(totalOut, c)}</div>
+                      </div>
+                      <div class="dms-card rounded-2xl p-4 border-l-4 border-l-sky-500">
+                        <div class="text-[11px] font-bold text-slate-500 uppercase">Net Cash Flow</div>
+                        <div class="text-xl font-extrabold ${totalIn - totalOut >= 0 ? 'text-sky-700' : 'text-rose-700'} mt-1">${fmtMoney(totalIn - totalOut, c)}</div>
+                      </div>
+                    </div>
+
+                    <div class="dms-card rounded-2xl p-4 flex flex-wrap gap-3">
+                      <input id="cb-search-input" type="text" value="${esc(state.cashbookSearch)}" placeholder="Search cashbook by party, account, ref, or notes..." class="flex-1 min-w-[200px] px-3.5 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs" />
+                      <select id="cb-dir-filter" class="px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs font-semibold">
+                        <option value="ALL" ${state.cashbookFilterType === 'ALL' ? 'selected' : ''}>All Entries (IN & OUT)</option>
+                        <option value="IN" ${state.cashbookFilterType === 'IN' ? 'selected' : ''}>Cash IN Only</option>
+                        <option value="OUT" ${state.cashbookFilterType === 'OUT' ? 'selected' : ''}>Cash OUT Only</option>
+                      </select>
+                    </div>
+
+                    <div class="dms-card rounded-2xl overflow-hidden">
+                      <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-left">
+                          <thead class="bg-slate-50 text-slate-600 uppercase text-[10px]">
+                            <tr>
+                              <th class="px-4 py-3">Date</th>
+                              <th class="px-4 py-3">Type</th>
+                              <th class="px-4 py-3">Account</th>
+                              <th class="px-4 py-3">Party / Details</th>
+                              <th class="px-4 py-3">Ref</th>
+                              <th class="px-4 py-3 text-right">Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody class="divide-y divide-slate-100">
+                            ${
+                              cbList.length === 0
+                                ? `<tr><td colspan="6" class="px-4 py-10 text-center text-slate-500">No cashbook entries recorded yet. Sales, purchases, expenses, capital, and returns will appear here automatically.</td></tr>`
+                                : cbList
+                                    .map((e) => {
+                                      const isIn = e.direction === 'IN';
+                                      return `
+                                        <tr class="hover:bg-sky-50/40">
+                                          <td class="px-4 py-3 text-slate-500">${esc((e.date || e.createdAt || '').slice(0, 10))}</td>
+                                          <td class="px-4 py-3">
+                                            <span class="px-2 py-0.5 rounded-md text-[10px] font-bold ${isIn ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}">
+                                              ${esc((e.entryType || '').replace(/_/g, ' '))}
+                                            </span>
+                                          </td>
+                                          <td class="px-4 py-3 font-semibold text-slate-700">${esc(e.accountName || '-')}</td>
+                                          <td class="px-4 py-3 text-slate-800">
+                                            <div class="font-bold">${esc(e.partyName || '-')}</div>
+                                            ${e.notes ? `<div class="text-[11px] text-slate-500">${esc(e.notes)}</div>` : ''}
+                                          </td>
+                                          <td class="px-4 py-3 font-mono text-slate-500">${esc(e.referenceId || '-')}</td>
+                                          <td class="px-4 py-3 text-right font-extrabold ${isIn ? 'text-emerald-700' : 'text-rose-700'}">
+                                            ${isIn ? '+' : '-'}${fmtMoney(e.amount, c)}
+                                          </td>
+                                        </tr>`;
+                                    })
+                                    .join('')
+                            }
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>`
+            }
           </div>
         `;
       }
@@ -3903,55 +4742,122 @@
         const sales = state.sales.filter((s) => inRange(s.createdAt));
         const purchases = state.purchases.filter((p) => inRange(p.createdAt));
         const expenses = state.expenses.filter((e) => inRange(e.date || e.createdAt));
+        const returns = state.returns.filter((r) => inRange(r.createdAt));
+        const cashbook = state.cashbook.filter((e) => inRange(e.date || e.createdAt));
 
-        const totalSales = sales.reduce((s, x) => s + Number(x.total || 0), 0);
-        let cogs = 0;
-        sales.forEach((s) => (s.items || []).forEach((it) => (cogs += Number(it.purchasePrice || 0) * Number(it.quantity || 0))));
-        const grossProfit = totalSales - cogs;
+        const grossSales = sales.reduce((s, x) => s + Number(x.total || 0), 0);
+        const saleReturnsAmt = returns.filter((r) => r.type === 'SALE_RETURN').reduce((s, r) => s + Number(r.totalAmount || r.totalRefund || 0), 0);
+        const purchaseReturnsAmt = returns.filter((r) => r.type === 'PURCHASE_RETURN').reduce((s, r) => s + Number(r.totalAmount || r.totalRefund || 0), 0);
+        const netSales = Math.max(0, grossSales - saleReturnsAmt);
+
+        let grossCogs = 0;
+        sales.forEach((s) => (s.items || []).forEach((it) => (grossCogs += Number(it.purchasePrice || 0) * Number(it.quantity || 0))));
+        let retCogs = 0;
+        returns.filter((r) => r.type === 'SALE_RETURN').forEach((r) => {
+          if (typeof r.cogsAmount === 'number') retCogs += r.cogsAmount;
+          else (r.items || []).forEach((it) => (retCogs += Number(it.purchasePrice || 0) * Number(it.quantity || 0)));
+        });
+        const netCogs = Math.max(0, grossCogs - retCogs);
+        const grossProfit = netSales - netCogs;
+        const otherIncome = cashbook.filter((e) => e.entryType === 'OTHER_INCOME').reduce((s, e) => s + Number(e.amount || 0), 0);
         const totalExpenses = expenses.reduce((s, x) => s + Number(x.amount || 0), 0);
-        const netProfit = grossProfit - totalExpenses;
+        const netProfit = grossProfit + otherIncome - totalExpenses;
+        const grossMargin = netSales > 0 ? ((grossProfit / netSales) * 100).toFixed(1) : '0.0';
+        const netMargin = netSales > 0 ? ((netProfit / netSales) * 100).toFixed(1) : '0.0';
         const m = computeMetrics();
 
         const tabs = [
           ['PL', 'Profit & Loss'],
           ['BS', 'Balance Sheet'],
+          ['DAYBOOK', 'Day Book & Cash Flow'],
+          ['RETURNS', 'Returns Report'],
           ['SALES', 'Sales Report'],
           ['PURCHASES', 'Purchases Report'],
           ['STOCK', 'Stock Valuation'],
           ['DUES', 'Customer Dues'],
+          ['PAYABLES', 'Supplier Payables'],
         ];
 
         let bodyHtml = '';
         if (state.reportsType === 'PL') {
+          const expByCat = {};
+          expenses.forEach((e) => {
+            expByCat[e.category || 'Other'] = (expByCat[e.category || 'Other'] || 0) + Number(e.amount || 0);
+          });
           bodyHtml = `
             <div class="space-y-3 text-sm">
-              <div class="flex justify-between p-3 rounded-xl bg-slate-50"><span>Gross Sales Revenue (${sales.length} invoices)</span><strong>${fmtMoney(totalSales, c)}</strong></div>
-              <div class="flex justify-between p-3 rounded-xl bg-slate-50"><span>Cost of Goods Sold (COGS)</span><strong class="text-rose-700">-${fmtMoney(cogs, c)}</strong></div>
-              <div class="flex justify-between p-3.5 rounded-xl bg-sky-50 border border-sky-200 font-bold text-sky-900"><span>Gross Profit</span><span>${fmtMoney(grossProfit, c)}</span></div>
-              <div class="flex justify-between p-3 rounded-xl bg-slate-50"><span>Operating Expenses (${expenses.length} entries)</span><strong class="text-rose-700">-${fmtMoney(totalExpenses, c)}</strong></div>
+              <div class="flex justify-between p-3 rounded-xl bg-slate-50"><span>Gross Sales Revenue (${sales.length} invoices)</span><strong>${fmtMoney(grossSales, c)}</strong></div>
+              <div class="flex justify-between p-3 rounded-xl bg-amber-50/60"><span>Less: Sales Returns & Credit Notes</span><strong class="text-amber-700">-${fmtMoney(saleReturnsAmt, c)}</strong></div>
+              <div class="flex justify-between p-3 rounded-xl bg-slate-100 font-bold"><span>Net Sales Revenue</span><span>${fmtMoney(netSales, c)}</span></div>
+              <div class="flex justify-between p-3 rounded-xl bg-slate-50"><span>Less: Net Cost of Goods Sold (COGS)</span><strong class="text-rose-700">-${fmtMoney(netCogs, c)}</strong></div>
+              <div class="flex justify-between p-3.5 rounded-xl bg-sky-50 border border-sky-200 font-bold text-sky-900"><span>Gross Profit (${grossMargin}% margin)</span><span>${fmtMoney(grossProfit, c)}</span></div>
+              ${otherIncome > 0 ? `<div class="flex justify-between p-3 rounded-xl bg-emerald-50/70"><span>Add: Other Business Income</span><strong class="text-emerald-700">+${fmtMoney(otherIncome, c)}</strong></div>` : ''}
+              <div class="p-3 rounded-xl bg-slate-50 space-y-1.5">
+                <div class="flex justify-between font-semibold"><span>Less: Operating Expenses (${expenses.length} entries)</span><strong class="text-rose-700">-${fmtMoney(totalExpenses, c)}</strong></div>
+                ${Object.entries(expByCat).map(([cat, amt]) => `<div class="flex justify-between text-xs text-slate-600 pl-4"><span>• ${esc(cat)}</span><span>${fmtMoney(amt, c)}</span></div>`).join('')}
+              </div>
               <div class="flex justify-between p-4 rounded-2xl ${netProfit >= 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-rose-50 border-rose-200 text-rose-900'} border font-extrabold text-base">
-                <span>Net Profit / Loss</span><span>${fmtMoney(netProfit, c)}</span>
+                <span>Net Profit / Loss (${netMargin}% net margin)</span><span>${fmtMoney(netProfit, c)}</span>
               </div>
             </div>`;
         } else if (state.reportsType === 'BS') {
           const totalAssets = m.cashBalance + m.bankBalance + m.mfsBalance + m.inventoryValue + m.totalReceivables;
-          const totalLiab = m.totalPayables;
-          const equity = totalAssets - totalLiab;
+          const totalLiab = m.totalPayables + m.loansPayable;
+          const netCapital = m.ownerCapitalTotal - m.ownerDrawingsTotal;
+          const totalEquity = totalAssets - totalLiab;
+          const reconciliationGap = totalEquity - (netCapital + m.netProfit);
           bodyHtml = `
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs">
               <div class="space-y-2">
                 <h3 class="font-extrabold text-sm text-slate-900 border-b pb-2">Assets</h3>
                 <div class="flex justify-between py-1.5"><span>Cash in Hand</span><strong>${fmtMoney(m.cashBalance, c)}</strong></div>
-                <div class="flex justify-between py-1.5"><span>Bank & MFS Accounts</span><strong>${fmtMoney(m.bankBalance + m.mfsBalance, c)}</strong></div>
-                <div class="flex justify-between py-1.5"><span>Inventory Stock Value</span><strong>${fmtMoney(m.inventoryValue, c)}</strong></div>
-                <div class="flex justify-between py-1.5"><span>Accounts Receivable</span><strong>${fmtMoney(m.totalReceivables, c)}</strong></div>
+                <div class="flex justify-between py-1.5"><span>Bank Accounts</span><strong>${fmtMoney(m.bankBalance, c)}</strong></div>
+                <div class="flex justify-between py-1.5"><span>MFS (bKash / Nagad)</span><strong>${fmtMoney(m.mfsBalance, c)}</strong></div>
+                <div class="flex justify-between py-1.5"><span>Inventory Stock Value (at Cost)</span><strong>${fmtMoney(m.inventoryValue, c)}</strong></div>
+                <div class="flex justify-between py-1.5"><span>Accounts Receivable (Customer Dues)</span><strong>${fmtMoney(m.totalReceivables, c)}</strong></div>
                 <div class="flex justify-between p-3 rounded-xl bg-sky-50 font-extrabold text-sky-900 text-sm"><span>Total Assets</span><span>${fmtMoney(totalAssets, c)}</span></div>
               </div>
               <div class="space-y-2">
-                <h3 class="font-extrabold text-sm text-slate-900 border-b pb-2">Liabilities & Equity</h3>
-                <div class="flex justify-between py-1.5"><span>Supplier Payables</span><strong class="text-rose-700">${fmtMoney(totalLiab, c)}</strong></div>
-                <div class="flex justify-between py-1.5"><span>Owner's Equity (Net Worth)</span><strong class="text-emerald-700">${fmtMoney(equity, c)}</strong></div>
+                <h3 class="font-extrabold text-sm text-slate-900 border-b pb-2">Liabilities & Owner's Equity</h3>
+                <div class="flex justify-between py-1.5"><span>Supplier Payables</span><strong class="text-rose-700">${fmtMoney(m.totalPayables, c)}</strong></div>
+                <div class="flex justify-between py-1.5"><span>Loans Payable</span><strong class="text-rose-700">${fmtMoney(m.loansPayable, c)}</strong></div>
+                <div class="flex justify-between py-1.5 border-t pt-2"><span>Owner Capital Contributed</span><strong>${fmtMoney(m.ownerCapitalTotal, c)}</strong></div>
+                <div class="flex justify-between py-1.5"><span>Less: Owner Drawings</span><strong class="text-amber-700">-${fmtMoney(m.ownerDrawingsTotal, c)}</strong></div>
+                <div class="flex justify-between py-1.5"><span>Net Profit (P&L)</span><strong class="${m.netProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}">${fmtMoney(m.netProfit, c)}</strong></div>
+                ${Math.abs(reconciliationGap) > 0.01 ? `<div class="flex justify-between py-1.5"><span>Opening Stock / Retained Equity</span><strong>${fmtMoney(reconciliationGap, c)}</strong></div>` : ''}
+                <div class="flex justify-between py-1.5 font-bold text-emerald-800 border-t pt-1.5"><span>Total Owner's Equity</span><span>${fmtMoney(totalEquity, c)}</span></div>
                 <div class="flex justify-between p-3 rounded-xl bg-emerald-50 font-extrabold text-emerald-900 text-sm"><span>Total Liabilities + Equity</span><span>${fmtMoney(totalAssets, c)}</span></div>
+              </div>
+            </div>`;
+        } else if (state.reportsType === 'DAYBOOK') {
+          const periodIn = cashbook.filter((e) => e.direction === 'IN').reduce((s, e) => s + Number(e.amount || 0), 0);
+          const periodOut = cashbook.filter((e) => e.direction === 'OUT').reduce((s, e) => s + Number(e.amount || 0), 0);
+          bodyHtml = `
+            <div class="space-y-4">
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div class="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200"><div class="text-slate-600 font-semibold">Total Cash Inflow</div><div class="text-lg font-extrabold text-emerald-700">+${fmtMoney(periodIn, c)}</div></div>
+                <div class="p-3.5 rounded-xl bg-rose-50 border border-rose-200"><div class="text-slate-600 font-semibold">Total Cash Outflow</div><div class="text-lg font-extrabold text-rose-700">-${fmtMoney(periodOut, c)}</div></div>
+                <div class="p-3.5 rounded-xl bg-sky-50 border border-sky-200"><div class="text-slate-600 font-semibold">Net Cash Movement</div><div class="text-lg font-extrabold text-sky-800">${fmtMoney(periodIn - periodOut, c)}</div></div>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left">
+                  <thead class="bg-slate-50 text-[10px] uppercase"><tr><th class="px-3 py-2">Date</th><th class="px-3 py-2">Type</th><th class="px-3 py-2">Account</th><th class="px-3 py-2">Party / Notes</th><th class="px-3 py-2 text-right">Amount</th></tr></thead>
+                  <tbody class="divide-y divide-slate-100">${cashbook.map((e) => `<tr><td class="px-3 py-2">${esc((e.date || e.createdAt || '').slice(0, 10))}</td><td class="px-3 py-2 font-bold">${esc((e.entryType || '').replace(/_/g, ' '))}</td><td class="px-3 py-2">${esc(e.accountName || '-')}</td><td class="px-3 py-2">${esc(e.partyName || '')}${e.notes ? ' — ' + esc(e.notes) : ''}</td><td class="px-3 py-2 text-right font-bold ${e.direction === 'IN' ? 'text-emerald-700' : 'text-rose-700'}">${e.direction === 'IN' ? '+' : '-'}${fmtMoney(e.amount, c)}</td></tr>`).join('') || '<tr><td colspan="5" class="p-4 text-center text-slate-400">No daybook entries in this period.</td></tr>'}</tbody>
+                </table>
+              </div>
+            </div>`;
+        } else if (state.reportsType === 'RETURNS') {
+          bodyHtml = `
+            <div class="space-y-4">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div class="p-3.5 rounded-xl bg-amber-50 border border-amber-200"><div class="text-slate-600 font-semibold">Sales Returns (Credit Notes)</div><div class="text-lg font-extrabold text-amber-700">${fmtMoney(saleReturnsAmt, c)}</div></div>
+                <div class="p-3.5 rounded-xl bg-sky-50 border border-sky-200"><div class="text-slate-600 font-semibold">Purchase Returns (Debit Notes)</div><div class="text-lg font-extrabold text-sky-700">${fmtMoney(purchaseReturnsAmt, c)}</div></div>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left">
+                  <thead class="bg-slate-50 text-[10px] uppercase"><tr><th class="px-3 py-2">Return #</th><th class="px-3 py-2">Type</th><th class="px-3 py-2">Ref</th><th class="px-3 py-2">Party</th><th class="px-3 py-2">Date</th><th class="px-3 py-2 text-right">Amount</th></tr></thead>
+                  <tbody class="divide-y divide-slate-100">${returns.map((r) => `<tr><td class="px-3 py-2 font-bold">${esc(r.returnNumber || r.id.slice(-8))}</td><td class="px-3 py-2">${esc(r.type)}</td><td class="px-3 py-2">${esc(r.referenceId)}</td><td class="px-3 py-2">${esc(r.partyName)}</td><td class="px-3 py-2">${esc((r.createdAt || '').slice(0, 10))}</td><td class="px-3 py-2 text-right font-bold">${fmtMoney(r.totalAmount || r.totalRefund, c)}</td></tr>`).join('') || '<tr><td colspan="6" class="p-4 text-center text-slate-400">No returns in this period.</td></tr>'}</tbody>
+                </table>
               </div>
             </div>`;
         } else if (state.reportsType === 'SALES') {
@@ -3978,13 +4884,22 @@
                 <tbody class="divide-y divide-slate-100">${state.products.map((p) => `<tr><td class="px-3 py-2 font-bold">${esc(p.name)}</td><td class="px-3 py-2">${p.currentStock || 0} ${esc(p.unit || 'pcs')}</td><td class="px-3 py-2">${fmtMoney(p.purchasePrice, c)}</td><td class="px-3 py-2 font-bold text-sky-700">${fmtMoney((p.currentStock || 0) * (p.purchasePrice || 0), c)}</td></tr>`).join('')}</tbody>
               </table>
             </div>`;
+        } else if (state.reportsType === 'PAYABLES') {
+          const payables = state.suppliers.filter((x) => (x.currentDue || 0) > 0);
+          bodyHtml = `
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left">
+                <thead class="bg-slate-50 text-[10px] uppercase"><tr><th class="px-3 py-2">Supplier</th><th class="px-3 py-2">Phone</th><th class="px-3 py-2">Total Purchased</th><th class="px-3 py-2">Total Paid</th><th class="px-3 py-2">Payable Balance</th><th class="px-3 py-2 text-right print:hidden">Action</th></tr></thead>
+                <tbody class="divide-y divide-slate-100">${payables.map((d) => `<tr><td class="px-3 py-2 font-bold">${esc(d.name)}</td><td class="px-3 py-2">${esc(d.phone)}</td><td class="px-3 py-2">${fmtMoney(Number(d.totalPurchased || 0) + Number(d.openingBalance || 0), c)}</td><td class="px-3 py-2 text-emerald-700">${fmtMoney(d.totalPaid || 0, c)}</td><td class="px-3 py-2 font-bold text-rose-700">${fmtMoney(d.currentDue, c)}</td><td class="px-3 py-2 text-right print:hidden"><button type="button" data-ledger-sup="${esc(d.id)}" class="px-2.5 py-1 rounded-lg bg-sky-50 text-sky-700 font-bold hover:bg-sky-100">View Ledger</button></td></tr>`).join('') || '<tr><td colspan="6" class="p-4 text-center text-slate-400">No supplier payables pending.</td></tr>'}</tbody>
+              </table>
+            </div>`;
         } else {
           const dues = state.customers.filter((x) => (x.currentDue || 0) > 0);
           bodyHtml = `
             <div class="overflow-x-auto">
               <table class="w-full text-xs text-left">
                 <thead class="bg-slate-50 text-[10px] uppercase"><tr><th class="px-3 py-2">Customer</th><th class="px-3 py-2">Phone</th><th class="px-3 py-2">Total Billed</th><th class="px-3 py-2">Due Balance</th></tr></thead>
-                <tbody class="divide-y divide-slate-100">${dues.map((d) => `<tr><td class="px-3 py-2 font-bold">${esc(d.name)}</td><td class="px-3 py-2">${esc(d.phone)}</td><td class="px-3 py-2">${fmtMoney(d.totalPurchases, c)}</td><td class="px-3 py-2 font-bold text-rose-700">${fmtMoney(d.currentDue, c)}</td></tr>`).join('')}</tbody>
+                <tbody class="divide-y divide-slate-100">${dues.map((d) => `<tr><td class="px-3 py-2 font-bold">${esc(d.name)}</td><td class="px-3 py-2">${esc(d.phone)}</td><td class="px-3 py-2">${fmtMoney(d.totalPurchases, c)}</td><td class="px-3 py-2 font-bold text-rose-700">${fmtMoney(d.currentDue, c)}</td></tr>`).join('') || '<tr><td colspan="4" class="p-4 text-center text-slate-400">No customer dues pending.</td></tr>'}</tbody>
               </table>
             </div>`;
         }
@@ -4458,7 +5373,16 @@
                 <div><label class="block font-bold mb-1">Phone *</label><input name="phone" required value="${esc(sup?.phone || '')}" class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>
                 <div><label class="block font-bold mb-1">Company</label><input name="company" value="${esc(sup?.company || '')}" class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>
               </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div><label class="block font-bold mb-1">Email</label><input name="email" type="email" value="${esc(sup?.email || '')}" class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>
+                ${
+                  !sup
+                    ? `<div><label class="block font-bold mb-1">Opening Payable Due (${esc(state.currentBusiness.currency || '৳')})</label><input name="openingBalance" type="number" min="0" step="any" value="0" class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>`
+                    : `<div><label class="block font-bold mb-1">Current Due</label><input disabled value="${fmtMoney(sup.currentDue || 0, state.currentBusiness.currency)}" class="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 font-bold text-rose-700" /></div>`
+                }
+              </div>
               <div><label class="block font-bold mb-1">Address</label><input name="address" value="${esc(sup?.address || '')}" class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>
+              <div><label class="block font-bold mb-1">Notes</label><input name="notes" value="${esc(sup?.notes || '')}" placeholder="Payment terms, bank details, etc." class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>
               <button type="submit" class="w-full py-2.5 rounded-xl bg-sky-600 text-white font-bold text-sm">Save Supplier</button>
             </form>
           `
@@ -4471,11 +5395,696 @@
               name: fd.get('name').toString().trim(),
               phone: fd.get('phone').toString().trim(),
               company: fd.get('company').toString().trim(),
+              email: (fd.get('email') || '').toString().trim(),
               address: fd.get('address').toString().trim(),
+              notes: (fd.get('notes') || '').toString().trim(),
+              ...(sup ? {} : { openingBalance: Number(fd.get('openingBalance') || 0) }),
             },
             sup?.id || null
           );
           modal.remove();
+        };
+      }
+
+      function openPaySupplierModal(sup, preselectedBillId = '', onPaid = null) {
+        if (!sup) return;
+        const c = state.currentBusiness.currency || '৳';
+        const openBills = state.purchases
+          .filter((p) => (p.supplierId === sup.id || (!p.supplierId && p.supplierName === sup.name)) && Number(p.dueAmount || 0) > 0)
+          .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+        const matchedBill = preselectedBillId ? openBills.find((b) => b.id === preselectedBillId) : null;
+        const defaultAmt = matchedBill ? Number(matchedBill.dueAmount || 0) : Number(sup.currentDue || 0);
+
+        const m = openModal(
+          `Record Supplier Payment — ${sup.name}`,
+          `
+            <form id="pay-sup-form" class="space-y-3 text-xs">
+              <div class="p-3 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-between">
+                <span class="text-slate-600 font-semibold">Current Outstanding Due</span>
+                <strong class="text-base text-rose-700">${fmtMoney(sup.currentDue || 0, c)}</strong>
+              </div>
+              <div>
+                <label class="block font-bold mb-1">Apply Payment To</label>
+                <select name="purchaseId" id="pay-sup-bill-select" class="w-full px-3 py-2 rounded-xl border border-slate-300 bg-slate-50 font-semibold">
+                  <option value="">General Account Payment (Overall Due)</option>
+                  ${openBills
+                    .map(
+                      (b) => `<option value="${esc(b.id)}" data-due="${Number(b.dueAmount || 0)}" ${preselectedBillId === b.id ? 'selected' : ''}>${esc(b.billNumber)} (${esc((b.createdAt || '').slice(0, 10))}) — Due: ${fmtMoney(b.dueAmount, c)}</option>`
+                    )
+                    .join('')}
+                </select>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="block font-bold mb-1">Amount Paid *</label>
+                  <input id="pay-sup-amount" name="amount" type="number" min="1" step="any" required value="${defaultAmt > 0 ? defaultAmt : ''}" class="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold" />
+                </div>
+                <div>
+                  <label class="block font-bold mb-1">Payment Date</label>
+                  <input name="date" type="date" value="${new Date().toISOString().slice(0, 10)}" class="w-full px-3 py-2 rounded-xl border border-slate-300" />
+                </div>
+              </div>
+              <div>
+                <label class="block font-bold mb-1">Pay From Account</label>
+                <select name="accountId" class="w-full px-3 py-2 rounded-xl border border-slate-300">
+                  ${state.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)} (${fmtMoney(a.balance, c)})</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="block font-bold mb-1">Notes / Reference (Check #, bKash TrxID, etc.)</label>
+                <input name="notes" placeholder="Optional payment reference..." class="w-full px-3 py-2 rounded-xl border border-slate-300" />
+              </div>
+              <button type="submit" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm">Record Supplier Payment</button>
+            </form>
+          `
+        );
+
+        const billSel = m.querySelector('#pay-sup-bill-select');
+        const amtInput = m.querySelector('#pay-sup-amount');
+        if (billSel && amtInput) {
+          billSel.onchange = () => {
+            const opt = billSel.options[billSel.selectedIndex];
+            const d = opt ? Number(opt.dataset.due || 0) : 0;
+            if (d > 0) amtInput.value = d;
+            else if (Number(sup.currentDue || 0) > 0) amtInput.value = Number(sup.currentDue || 0);
+          };
+        }
+
+        m.querySelector('#pay-sup-form').onsubmit = async (e) => {
+          e.preventDefault();
+          const fd = new FormData(e.target);
+          try {
+            await paySupplier(
+              sup.id,
+              Number(fd.get('amount')),
+              fd.get('accountId').toString(),
+              fd.get('notes').toString().trim(),
+              {
+                purchaseId: fd.get('purchaseId').toString(),
+                date: fd.get('date').toString(),
+              }
+            );
+            m.remove();
+            if (onPaid) onPaid();
+          } catch (err) {
+            showToast(err?.message || 'Payment failed', 'error');
+          }
+        };
+      }
+
+      function openSupplierLedgerModal(supId, initialTab = 'statement') {
+        const biz = state.currentBusiness;
+        const c = biz.currency || '৳';
+        let activeTab = initialTab;
+        let fromDate = '';
+        let toDate = '';
+
+        const modal = openModal(
+          `Supplier Ledger`,
+          `<div id="sup-ledger-root" class="space-y-4 text-xs"></div>`,
+          'max-w-4xl'
+        );
+        const root = modal.querySelector('#sup-ledger-root');
+
+        function renderLedgerContent() {
+          const sup = state.suppliers.find((x) => x.id === supId);
+          if (!sup) {
+            root.innerHTML = `<div class="p-6 text-center text-slate-500">Supplier record not found.</div>`;
+            return;
+          }
+          const data = getSupplierLedgerData(sup);
+          const sm = data.summary;
+          const inDateRange = (d) => {
+            const day = String(d || '').slice(0, 10);
+            if (!day || day === '-') return true;
+            if (fromDate && day < fromDate) return false;
+            if (toDate && day > toDate) return false;
+            return true;
+          };
+
+          const filteredStatement = data.statementRows.filter((r) => inDateRange(r.date));
+          const filteredPurchases = data.purchases.filter((p) => inDateRange(p.createdAt));
+          const filteredPayments = data.payments.filter((pm) => inDateRange(pm.date || pm.createdAt));
+
+          root.innerHTML = `
+            <div id="invoice-printable" class="space-y-4">
+              <!-- Printable & Interactive Header -->
+              <div class="flex flex-wrap items-start justify-between gap-4 pb-4 border-b border-slate-200">
+                <div class="flex items-center gap-3">
+                  ${renderShopLogoHtml(biz, 'w-11 h-11', 'text-xs')}
+                  <div>
+                    <div class="text-[11px] font-bold uppercase tracking-wider text-sky-700">${esc(biz.name)} • Supplier Ledger Statement</div>
+                    <h3 class="text-lg font-extrabold text-slate-900">${esc(sup.name)} ${sup.company ? `<span class="text-xs font-semibold text-slate-500">(${esc(sup.company)})</span>` : ''}</h3>
+                    <div class="text-[11px] text-slate-500">
+                      ${esc(sup.phone || 'No phone')}${sup.email ? ' • ' + esc(sup.email) : ''}${sup.address ? ' • ' + esc(sup.address) : ''}
+                    </div>
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="text-[11px] text-slate-500">Current Outstanding Due</div>
+                  <div class="text-2xl font-extrabold ${sm.currentDue > 0 ? 'text-rose-700' : 'text-emerald-700'}">${fmtMoney(sm.currentDue, c)}</div>
+                  <div class="text-[10px] text-slate-400">As of ${new Date().toISOString().slice(0, 10)}</div>
+                </div>
+              </div>
+
+              <!-- 4 KPI Cards -->
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div class="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                  <div class="text-[10px] font-bold uppercase text-slate-500">Total Purchased</div>
+                  <div class="text-base font-extrabold text-slate-900 mt-0.5">${fmtMoney(sm.totalPurchased, c)}</div>
+                  <div class="text-[10px] text-slate-400">${sm.billCount} bill${sm.billCount === 1 ? '' : 's'}${sm.openingBalance > 0 ? ` + Opening` : ''}</div>
+                </div>
+                <div class="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                  <div class="text-[10px] font-bold uppercase text-emerald-700">Total Paid</div>
+                  <div class="text-base font-extrabold text-emerald-700 mt-0.5">${fmtMoney(sm.totalPaidAll, c)}</div>
+                  <div class="text-[10px] text-emerald-600">${sm.paymentCount} payment${sm.paymentCount === 1 ? '' : 's'}</div>
+                </div>
+                <div class="p-3 rounded-xl bg-amber-50 border border-amber-200">
+                  <div class="text-[10px] font-bold uppercase text-amber-700">Returns Adjusted</div>
+                  <div class="text-base font-extrabold text-amber-800 mt-0.5">${fmtMoney(sm.totalReturnedDueAdj, c)}</div>
+                  <div class="text-[10px] text-amber-700">${sm.returnCount} return${sm.returnCount === 1 ? '' : 's'}</div>
+                </div>
+                <div class="p-3 rounded-xl ${sm.currentDue > 0 ? 'bg-rose-50 border-rose-200' : 'bg-emerald-50 border-emerald-200'} border">
+                  <div class="text-[10px] font-bold uppercase ${sm.currentDue > 0 ? 'text-rose-700' : 'text-emerald-700'}">Outstanding Payable</div>
+                  <div class="text-base font-extrabold ${sm.currentDue > 0 ? 'text-rose-700' : 'text-emerald-700'} mt-0.5">${fmtMoney(sm.currentDue, c)}</div>
+                  <div class="text-[10px] ${sm.currentDue > 0 ? 'text-rose-600' : 'text-emerald-600'}">${sm.currentDue > 0 ? 'Balance owed' : 'Fully settled'}</div>
+                </div>
+              </div>
+
+              <!-- Controls Bar (Hidden when printing) -->
+              <div class="flex flex-wrap items-center justify-between gap-2 print:hidden">
+                <div class="flex flex-wrap bg-slate-100 p-1 rounded-xl font-bold text-[11px]">
+                  <button type="button" data-sl-tab="statement" class="px-3 py-1.5 rounded-lg ${activeTab === 'statement' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}">Full Statement (${filteredStatement.length})</button>
+                  <button type="button" data-sl-tab="purchases" class="px-3 py-1.5 rounded-lg ${activeTab === 'purchases' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}">Purchase History (${filteredPurchases.length})</button>
+                  <button type="button" data-sl-tab="payments" class="px-3 py-1.5 rounded-lg ${activeTab === 'payments' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}">Payment History (${filteredPayments.length})</button>
+                </div>
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <input id="sl-from-date" type="date" value="${esc(fromDate)}" class="px-2 py-1.5 rounded-lg border border-slate-300 text-[11px]" title="From Date" />
+                  <span class="text-slate-400">to</span>
+                  <input id="sl-to-date" type="date" value="${esc(toDate)}" class="px-2 py-1.5 rounded-lg border border-slate-300 text-[11px]" title="To Date" />
+                  ${fromDate || toDate ? `<button type="button" id="btn-sl-clear-dates" class="px-2 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-[11px] font-bold">Reset</button>` : ''}
+                </div>
+              </div>
+
+              <!-- Tab Content -->
+              <div class="border border-slate-200 rounded-2xl overflow-hidden">
+                <div class="overflow-x-auto max-h-[380px] overflow-y-auto print:max-h-none">
+                  ${
+                    activeTab === 'statement'
+                      ? `<table class="w-full text-xs text-left">
+                          <thead class="bg-slate-50 text-slate-600 uppercase text-[10px] sticky top-0">
+                            <tr>
+                              <th class="px-3 py-2.5">Date</th>
+                              <th class="px-3 py-2.5">Ref #</th>
+                              <th class="px-3 py-2.5">Particulars</th>
+                              <th class="px-3 py-2.5 text-right">Billed (+)</th>
+                              <th class="px-3 py-2.5 text-right">Paid / Adj (-)</th>
+                              <th class="px-3 py-2.5 text-right">Running Due</th>
+                            </tr>
+                          </thead>
+                          <tbody class="divide-y divide-slate-100">
+                            ${
+                              filteredStatement.length === 0
+                                ? `<tr><td colspan="6" class="p-6 text-center text-slate-400">No ledger transactions found for this supplier.</td></tr>`
+                                : filteredStatement
+                                    .map((row) => {
+                                      const creditOut = row.paid + row.returnedDue;
+                                      const badgeCls =
+                                        row.kind === 'PURCHASE'
+                                          ? 'bg-sky-50 text-sky-700'
+                                          : row.kind === 'PAYMENT'
+                                          ? 'bg-emerald-50 text-emerald-700'
+                                          : row.kind === 'RETURN'
+                                          ? 'bg-amber-50 text-amber-700'
+                                          : 'bg-slate-100 text-slate-700';
+                                      return `
+                                        <tr class="hover:bg-slate-50/70">
+                                          <td class="px-3 py-2.5 text-slate-500 whitespace-nowrap">${esc(row.date)}</td>
+                                          <td class="px-3 py-2.5 font-mono font-bold"><span class="px-2 py-0.5 rounded-md text-[10px] ${badgeCls}">${esc(row.ref)}</span></td>
+                                          <td class="px-3 py-2.5">
+                                            <div class="font-bold text-slate-900">${esc(row.description)}</div>
+                                            ${row.subtext ? `<div class="text-[11px] text-slate-500">${esc(row.subtext)}</div>` : ''}
+                                          </td>
+                                          <td class="px-3 py-2.5 text-right font-bold text-slate-900">${row.billed > 0 ? fmtMoney(row.billed, c) : '-'}</td>
+                                          <td class="px-3 py-2.5 text-right font-bold text-emerald-700">${creditOut > 0 ? '-' + fmtMoney(creditOut, c) : '-'}</td>
+                                          <td class="px-3 py-2.5 text-right font-extrabold ${row.runningBalance > 0 ? 'text-rose-700' : 'text-emerald-700'}">${fmtMoney(row.runningBalance, c)}</td>
+                                        </tr>`;
+                                    })
+                                    .join('')
+                            }
+                          </tbody>
+                        </table>`
+                      : activeTab === 'purchases'
+                      ? `<table class="w-full text-xs text-left">
+                          <thead class="bg-slate-50 text-slate-600 uppercase text-[10px] sticky top-0">
+                            <tr>
+                              <th class="px-3 py-2.5">Bill #</th>
+                              <th class="px-3 py-2.5">Date</th>
+                              <th class="px-3 py-2.5">Items</th>
+                              <th class="px-3 py-2.5 text-right">Total</th>
+                              <th class="px-3 py-2.5 text-right">Paid</th>
+                              <th class="px-3 py-2.5 text-right">Due</th>
+                              <th class="px-3 py-2.5">Status</th>
+                              <th class="px-3 py-2.5 text-right print:hidden">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody class="divide-y divide-slate-100">
+                            ${
+                              filteredPurchases.length === 0
+                                ? `<tr><td colspan="8" class="p-6 text-center text-slate-400">No purchase bills recorded for this supplier.</td></tr>`
+                                : filteredPurchases
+                                    .map((p) => {
+                                      const pDue = Number(p.dueAmount || 0);
+                                      const st = p.status || (pDue <= 0 ? 'PAID' : Number(p.paidAmount || 0) > 0 ? 'PARTIAL' : 'DUE');
+                                      const stCls = st === 'PAID' ? 'bg-emerald-50 text-emerald-700' : st === 'PARTIAL' ? 'bg-amber-50 text-amber-700' : 'bg-rose-50 text-rose-700';
+                                      const itemsText = (p.items || []).map((it) => `${it.productName} ×${it.quantity}`).join(', ');
+                                      return `
+                                        <tr class="hover:bg-slate-50/70">
+                                          <td class="px-3 py-2.5 font-bold text-sky-700 whitespace-nowrap">${esc(p.billNumber)}</td>
+                                          <td class="px-3 py-2.5 text-slate-500 whitespace-nowrap">${esc((p.createdAt || '').slice(0, 10))}</td>
+                                          <td class="px-3 py-2.5 max-w-[200px] truncate text-slate-600" title="${esc(itemsText)}">${esc(itemsText || '-')}</td>
+                                          <td class="px-3 py-2.5 text-right font-bold text-slate-900">${fmtMoney(p.total, c)}</td>
+                                          <td class="px-3 py-2.5 text-right font-bold text-emerald-700">${fmtMoney(p.paidAmount, c)}</td>
+                                          <td class="px-3 py-2.5 text-right font-bold ${pDue > 0 ? 'text-rose-700' : 'text-slate-400'}">${fmtMoney(pDue, c)}</td>
+                                          <td class="px-3 py-2.5"><span class="px-2 py-0.5 rounded-md text-[10px] font-bold ${stCls}">${esc(st)}</span></td>
+                                          <td class="px-3 py-2.5 text-right space-x-1 whitespace-nowrap print:hidden">
+                                            ${pDue > 0 ? `<button type="button" data-sl-pay-bill="${esc(p.id)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white font-bold text-[10px]">Pay</button>` : ''}
+                                            <button type="button" data-sl-print-bill="${esc(p.id)}" class="px-2 py-1 rounded-lg bg-sky-50 text-sky-700 font-bold text-[10px]">Bill</button>
+                                            <button type="button" data-sl-ret-bill="${esc(p.id)}" class="px-2 py-1 rounded-lg bg-amber-50 text-amber-700 font-bold text-[10px]">Return</button>
+                                          </td>
+                                        </tr>`;
+                                    })
+                                    .join('')
+                            }
+                          </tbody>
+                        </table>`
+                      : `<table class="w-full text-xs text-left">
+                          <thead class="bg-slate-50 text-slate-600 uppercase text-[10px] sticky top-0">
+                            <tr>
+                              <th class="px-3 py-2.5">Date</th>
+                              <th class="px-3 py-2.5">Payment Ref</th>
+                              <th class="px-3 py-2.5">Account</th>
+                              <th class="px-3 py-2.5">Linked Bill</th>
+                              <th class="px-3 py-2.5">Notes / Recorded By</th>
+                              <th class="px-3 py-2.5 text-right">Amount Paid</th>
+                            </tr>
+                          </thead>
+                          <tbody class="divide-y divide-slate-100">
+                            ${
+                              filteredPayments.length === 0
+                                ? `<tr><td colspan="6" class="p-6 text-center text-slate-400">No payments recorded for this supplier yet.</td></tr>`
+                                : filteredPayments
+                                    .map((pm) => `
+                                      <tr class="hover:bg-slate-50/70">
+                                        <td class="px-3 py-2.5 text-slate-500 whitespace-nowrap">${esc(pm.date || '-')}</td>
+                                        <td class="px-3 py-2.5 font-mono font-bold text-emerald-700">${esc(pm.ref)}</td>
+                                        <td class="px-3 py-2.5 font-semibold text-slate-700">${esc(pm.accountName)}</td>
+                                        <td class="px-3 py-2.5 font-mono text-sky-700">${esc(pm.billNumber || 'General A/C')}</td>
+                                        <td class="px-3 py-2.5 text-slate-600">
+                                          <div>${esc(pm.notes || '-')}</div>
+                                          ${pm.createdByName ? `<div class="text-[10px] text-slate-400">By: ${esc(pm.createdByName)}</div>` : ''}
+                                        </td>
+                                        <td class="px-3 py-2.5 text-right font-extrabold text-emerald-700">${fmtMoney(pm.amount, c)}</td>
+                                      </tr>`)
+                                    .join('')
+                            }
+                          </tbody>
+                        </table>`
+                  }
+                </div>
+              </div>
+            </div>
+
+            <!-- Modal Footer Actions -->
+            <div class="flex flex-wrap items-center justify-between gap-2 pt-2 print:hidden">
+              <div class="flex flex-wrap gap-2">
+                <button type="button" id="btn-sl-pay-now" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold">+ Record Payment</button>
+                <button type="button" id="btn-sl-new-bill" class="px-4 py-2 rounded-xl bg-sky-50 text-sky-700 hover:bg-sky-100 font-bold">+ New Purchase Bill</button>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button type="button" id="btn-sl-export-csv" class="px-4 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold">Export CSV</button>
+                <button type="button" onclick="window.print()" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold">Print Statement</button>
+              </div>
+            </div>
+          `;
+
+          root.querySelectorAll('[data-sl-tab]').forEach((b) => {
+            b.onclick = () => { activeTab = b.dataset.slTab; renderLedgerContent(); };
+          });
+          const fInp = root.querySelector('#sl-from-date');
+          const tInp = root.querySelector('#sl-to-date');
+          if (fInp) fInp.onchange = () => { fromDate = fInp.value; renderLedgerContent(); };
+          if (tInp) tInp.onchange = () => { toDate = tInp.value; renderLedgerContent(); };
+          const clrBtn = root.querySelector('#btn-sl-clear-dates');
+          if (clrBtn) clrBtn.onclick = () => { fromDate = ''; toDate = ''; renderLedgerContent(); };
+
+          const payNowBtn = root.querySelector('#btn-sl-pay-now');
+          if (payNowBtn) payNowBtn.onclick = () => openPaySupplierModal(sup, '', () => renderLedgerContent());
+
+          const newBillBtn = root.querySelector('#btn-sl-new-bill');
+          if (newBillBtn) {
+            newBillBtn.onclick = () => {
+              modal.remove();
+              state.currentView = 'purchases';
+              state.purchasesTab = 'create';
+              state.purchasesSupplierId = sup.id;
+              render();
+            };
+          }
+
+          const expBtn = root.querySelector('#btn-sl-export-csv');
+          if (expBtn) {
+            expBtn.onclick = () => {
+              const rows = [
+                ['Supplier', sup.name, 'Phone', sup.phone || '', 'Current Due', sm.currentDue],
+                [],
+                ['Date', 'Reference', 'Type', 'Particulars', 'Details', 'Billed (+)', 'Paid / Adjusted (-)', 'Running Due'],
+                ...filteredStatement.map((r) => [r.date, r.ref, r.kind, r.description, r.subtext, r.billed, r.paid + r.returnedDue, r.runningBalance]),
+              ];
+              const blob = new Blob([rows.map((r) => r.map((x) => `"${String(x ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = `supplier-ledger-${(sup.name || 'supplier').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.csv`;
+              a.click();
+            };
+          }
+
+          root.querySelectorAll('[data-sl-pay-bill]').forEach((b) => {
+            b.onclick = () => openPaySupplierModal(sup, b.dataset.slPayBill, () => renderLedgerContent());
+          });
+          root.querySelectorAll('[data-sl-print-bill]').forEach((b) => {
+            b.onclick = () => {
+              const p = state.purchases.find((x) => x.id === b.dataset.slPrintBill);
+              if (p) openInvoicePrintModal(p, 'PURCHASE');
+            };
+          });
+          root.querySelectorAll('[data-sl-ret-bill]').forEach((b) => {
+            b.onclick = () => {
+              const p = state.purchases.find((x) => x.id === b.dataset.slRetBill);
+              if (p) {
+                modal.remove();
+                openReturnModal('PURCHASE_RETURN', p);
+              }
+            };
+          });
+        }
+
+        root._refreshLedger = renderLedgerContent;
+        renderLedgerContent();
+      }
+
+      function openReturnModal(defaultType = 'SALE_RETURN', preselectedDoc = null) {
+        const c = state.currentBusiness.currency || '৳';
+        const isSale = defaultType === 'SALE_RETURN';
+        const docs = isSale ? state.sales : state.purchases;
+        let selectedDoc = preselectedDoc || docs[0] || null;
+
+        const modal = openModal(
+          isSale ? 'Process Sales Return (Customer)' : 'Process Purchase Return (Supplier)',
+          `<div id="ret-modal-body" class="space-y-4 text-xs"></div>`,
+          'max-w-2xl'
+        );
+        const body = modal.querySelector('#ret-modal-body');
+
+        function renderModalBody() {
+          const items = selectedDoc?.items || [];
+          const partyDue = selectedDoc ? Number(selectedDoc.dueAmount || 0) : 0;
+          body.innerHTML = `
+            <form id="ret-form" class="space-y-4">
+              <div>
+                <label class="block font-bold text-slate-700 mb-1">${isSale ? 'Select Sales Invoice' : 'Select Purchase Bill'}</label>
+                <select id="ret-doc-select" class="w-full px-3 py-2 rounded-xl border border-slate-300 bg-slate-50 font-semibold">
+                  ${
+                    docs.length === 0
+                      ? '<option value="">No invoices/bills found</option>'
+                      : docs
+                          .map((d) => {
+                            const refNo = isSale ? d.invoiceNumber : d.billNumber;
+                            const party = isSale ? d.customerName : d.supplierName;
+                            return `<option value="${esc(d.id)}" ${selectedDoc?.id === d.id ? 'selected' : ''}>${esc(refNo)} — ${esc(party)} (${fmtMoney(d.total, c)})</option>`;
+                          })
+                          .join('')
+                  }
+                </select>
+              </div>
+              ${
+                !selectedDoc
+                  ? `<div class="p-6 rounded-xl bg-slate-50 text-center text-slate-500">No ${isSale ? 'sales invoices' : 'purchase bills'} available to return.</div>`
+                  : `<div class="border border-slate-200 rounded-xl overflow-hidden">
+                      <div class="bg-slate-50 px-3 py-2 flex items-center justify-between border-b border-slate-200">
+                        <span class="font-bold text-slate-700">Select Items & Quantities to Return</span>
+                        <button type="button" id="btn-ret-all-qty" class="text-[11px] font-bold text-sky-700 hover:underline">Return All</button>
+                      </div>
+                      <div class="divide-y divide-slate-100 max-h-56 overflow-y-auto">
+                        ${items
+                          .map((it, idx) => {
+                            const rate = Number(isSale ? it.unitPrice : it.unitCost || 0);
+                            return `
+                              <div class="p-3 flex items-center justify-between gap-3">
+                                <div class="min-w-0 flex-1">
+                                  <div class="font-bold text-slate-900 truncate">${esc(it.productName)}</div>
+                                  <div class="text-[11px] text-slate-500">Orig Qty: ${it.quantity} × ${fmtMoney(rate, c)}</div>
+                                </div>
+                                <div class="flex items-center gap-2 shrink-0">
+                                  <label class="text-[11px] text-slate-500">Return Qty:</label>
+                                  <input type="number" min="0" max="${it.quantity}" value="${preselectedDoc ? it.quantity : 0}" data-ret-qty="${idx}" data-ret-rate="${rate}" class="w-16 px-2 py-1 rounded-lg border border-slate-300 font-bold text-center" />
+                                </div>
+                              </div>`;
+                          })
+                          .join('')}
+                      </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label class="block font-bold mb-1">Total Return Value (${esc(c)})</label>
+                        <input id="ret-total-val" type="number" min="0" step="any" readonly class="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 font-extrabold text-slate-900" />
+                      </div>
+                      <div>
+                        <label class="block font-bold mb-1">Adjust Party Due (${esc(c)})</label>
+                        <input id="ret-due-adj" name="dueAdjusted" type="number" min="0" step="any" value="0" class="w-full px-3 py-2 rounded-xl border border-emerald-300 bg-emerald-50/40 font-bold text-emerald-800" />
+                      </div>
+                      <div>
+                        <label class="block font-bold mb-1">${isSale ? 'Cash Refund Paid' : 'Cash Refund Received'} (${esc(c)})</label>
+                        <input id="ret-cash-ref" name="cashRefund" type="number" min="0" step="any" value="0" class="w-full px-3 py-2 rounded-xl border border-rose-300 bg-rose-50/40 font-bold text-rose-800" />
+                      </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label class="block font-bold mb-1">${isSale ? 'Refund From Account' : 'Deposit Refund To Account'}</label>
+                        <select name="accountId" class="w-full px-3 py-2 rounded-xl border border-slate-300">
+                          ${state.accounts.map((a) => `<option value="${esc(a.id)}" ${selectedDoc.accountId === a.id ? 'selected' : ''}>${esc(a.name)} (${fmtMoney(a.balance, c)})</option>`).join('')}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block font-bold mb-1">Return Reason *</label>
+                        <input name="reason" required value="Customer/Quality Return" class="w-full px-3 py-2 rounded-xl border border-slate-300" />
+                      </div>
+                    </div>
+
+                    <button type="submit" class="w-full py-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-sm shadow-md">
+                      Confirm ${isSale ? 'Sales Return & Restore Stock' : 'Purchase Return & Deduct Stock'}
+                    </button>`
+              }
+            </form>
+          `;
+
+          const docSel = body.querySelector('#ret-doc-select');
+          if (docSel) {
+            docSel.onchange = () => {
+              selectedDoc = docs.find((d) => d.id === docSel.value) || null;
+              renderModalBody();
+            };
+          }
+
+          const recalcTotals = () => {
+            let sum = 0;
+            body.querySelectorAll('[data-ret-qty]').forEach((inp) => {
+              const q = Math.max(0, Math.min(Number(inp.max || 0), Number(inp.value || 0)));
+              inp.value = q;
+              sum += q * Number(inp.dataset.retRate || 0);
+            });
+            const totEl = body.querySelector('#ret-total-val');
+            const dueEl = body.querySelector('#ret-due-adj');
+            const cashEl = body.querySelector('#ret-cash-ref');
+            if (totEl) totEl.value = sum;
+            const autoDue = Math.min(sum, partyDue);
+            if (dueEl) dueEl.value = autoDue;
+            if (cashEl) cashEl.value = Math.max(0, sum - autoDue);
+          };
+
+          body.querySelectorAll('[data-ret-qty]').forEach((inp) => {
+            inp.oninput = recalcTotals;
+          });
+          const retAllBtn = body.querySelector('#btn-ret-all-qty');
+          if (retAllBtn) {
+            retAllBtn.onclick = () => {
+              body.querySelectorAll('[data-ret-qty]').forEach((inp) => {
+                inp.value = inp.max;
+              });
+              recalcTotals();
+            };
+          }
+          const dueEl = body.querySelector('#ret-due-adj');
+          const cashEl = body.querySelector('#ret-cash-ref');
+          if (dueEl && cashEl) {
+            dueEl.oninput = () => {
+              const tot = Number(body.querySelector('#ret-total-val')?.value || 0);
+              const d = Math.max(0, Math.min(tot, Number(dueEl.value || 0)));
+              cashEl.value = Math.max(0, tot - d);
+            };
+          }
+
+          recalcTotals();
+
+          const form = body.querySelector('#ret-form');
+          if (form && selectedDoc) {
+            form.onsubmit = async (e) => {
+              e.preventDefault();
+              const retItems = [];
+              body.querySelectorAll('[data-ret-qty]').forEach((inp) => {
+                const qty = Number(inp.value || 0);
+                if (qty > 0) {
+                  const orig = items[Number(inp.dataset.retQty)];
+                  retItems.push({ ...orig, quantity: qty });
+                }
+              });
+              if (retItems.length === 0) return showToast('Set return quantity > 0 for at least one item.', 'error');
+              const fd = new FormData(form);
+              const totalVal = Number(body.querySelector('#ret-total-val')?.value || 0);
+              const dueAdj = Number(fd.get('dueAdjusted') || 0);
+              const cashRef = Number(fd.get('cashRefund') || 0);
+              try {
+                const saved = await createReturnRecord({
+                  type: defaultType,
+                  referenceId: isSale ? selectedDoc.invoiceNumber : selectedDoc.billNumber,
+                  partyId: isSale ? selectedDoc.customerId : selectedDoc.supplierId,
+                  partyName: isSale ? selectedDoc.customerName : selectedDoc.supplierName,
+                  items: retItems,
+                  totalRefund: totalVal,
+                  dueAdjusted: dueAdj,
+                  cashRefund: cashRef,
+                  accountId: fd.get('accountId').toString(),
+                  reason: fd.get('reason').toString(),
+                });
+                modal.remove();
+                if (saved) openReturnPrintModal(saved);
+              } catch (err) {
+                showToast(err?.message || 'Return failed', 'error');
+              }
+            };
+          }
+        }
+        renderModalBody();
+      }
+
+      function openReturnPrintModal(ret) {
+        const biz = state.currentBusiness;
+        const c = biz.currency || '৳';
+        const isSale = ret.type === 'SALE_RETURN';
+        const modal = openModal(
+          `${isSale ? 'Credit Note' : 'Debit Note'} ${ret.returnNumber || ret.id}`,
+          `
+            <div id="invoice-printable" class="space-y-4 text-xs text-slate-900">
+              <div class="flex items-start justify-between border-b border-slate-200 pb-4">
+                <div class="flex items-center gap-3">
+                  ${renderShopLogoHtml(biz, 'w-12 h-12', 'text-sm')}
+                  <div>
+                    <div class="text-lg font-extrabold">${esc(biz.name)}</div>
+                    <div class="text-slate-500">${esc(biz.address || '')} • ${esc(biz.phone || '')}</div>
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="text-sm font-extrabold text-amber-700">${isSale ? 'SALES RETURN / CREDIT NOTE' : 'PURCHASE RETURN / DEBIT NOTE'}</div>
+                  <div class="font-bold">${esc(ret.returnNumber || ret.id)}</div>
+                  <div class="text-slate-500">${esc((ret.createdAt || '').slice(0, 10))}</div>
+                </div>
+              </div>
+              <div class="flex justify-between">
+                <div><strong>${isSale ? 'Customer:' : 'Supplier:'}</strong> ${esc(ret.partyName || '-')}</div>
+                <div><strong>Ref Invoice/Bill:</strong> ${esc(ret.referenceId || 'DIRECT')}</div>
+              </div>
+              <table class="w-full border-collapse">
+                <thead><tr class="bg-slate-100 text-left"><th class="p-2">Item</th><th class="p-2">Return Qty</th><th class="p-2">Rate</th><th class="p-2 text-right">Amount</th></tr></thead>
+                <tbody class="divide-y divide-slate-100">
+                  ${(ret.items || [])
+                    .map((it) => {
+                      const rate = Number(isSale ? it.unitPrice : it.unitCost || 0);
+                      return `<tr><td class="p-2">${esc(it.productName)}</td><td class="p-2">${it.quantity}</td><td class="p-2">${fmtMoney(rate, c)}</td><td class="p-2 text-right font-bold">${fmtMoney(rate * it.quantity, c)}</td></tr>`;
+                    })
+                    .join('')}
+                </tbody>
+              </table>
+              <div class="border-t border-slate-200 pt-3 space-y-1 text-right">
+                <div>Total Return Value: <strong>${fmtMoney(ret.totalAmount || ret.totalRefund || 0, c)}</strong></div>
+                <div>Due Adjusted: <strong class="text-emerald-700">${fmtMoney(ret.dueAdjusted || 0, c)}</strong></div>
+                <div>Cash Refund: <strong class="text-rose-700">${fmtMoney(ret.cashRefund ?? ret.totalAmount ?? 0, c)}</strong></div>
+                ${ret.reason ? `<div class="text-left text-slate-500 pt-2"><strong>Reason:</strong> ${esc(ret.reason)}</div>` : ''}
+              </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-5 print:hidden">
+              <button type="button" onclick="window.print()" class="px-5 py-2.5 rounded-xl bg-sky-600 text-white text-xs font-bold">Print Note</button>
+            </div>
+          `,
+          'max-w-xl'
+        );
+      }
+
+      function openCashbookEntryModal(presetType = 'CAPITAL_IN') {
+        const titles = {
+          CAPITAL_IN: 'Record Owner Capital / Business Loan',
+          DRAWING_OUT: 'Record Owner Drawing / Withdrawal',
+          OTHER_INCOME: 'Record Other Business Income',
+        };
+        const m = openModal(
+          titles[presetType] || 'Bookkeeping Entry',
+          `
+            <form id="cb-entry-form" class="space-y-3 text-xs">
+              <div>
+                <label class="block font-bold mb-1">Entry Type</label>
+                <select name="entryType" class="w-full px-3 py-2 rounded-xl border border-slate-300 font-semibold">
+                  ${
+                    presetType === 'CAPITAL_IN'
+                      ? `<option value="CAPITAL_IN">Owner Capital Investment (+Equity)</option><option value="LOAN_IN">Business Loan Received (+Liability)</option><option value="LOAN_REPAY">Loan Repayment (-Liability)</option>`
+                      : presetType === 'DRAWING_OUT'
+                      ? `<option value="DRAWING_OUT">Owner Drawing / Personal Withdrawal</option><option value="LOAN_REPAY">Loan Repayment</option>`
+                      : `<option value="OTHER_INCOME">Other Business Income (Commission / Service / Misc)</option>`
+                  }
+                </select>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div><label class="block font-bold mb-1">Amount *</label><input name="amount" type="number" min="1" step="any" required class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>
+                <div><label class="block font-bold mb-1">Date</label><input name="date" type="date" value="${new Date().toISOString().slice(0, 10)}" class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>
+              </div>
+              <div>
+                <label class="block font-bold mb-1">Account (Cash / Bank / MFS)</label>
+                <select name="accountId" class="w-full px-3 py-2 rounded-xl border border-slate-300">
+                  ${state.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)} (${fmtMoney(a.balance, state.currentBusiness.currency)})</option>`).join('')}
+                </select>
+              </div>
+              <div><label class="block font-bold mb-1">Source / Recipient Name</label><input name="partyName" placeholder="e.g. Owner / Bank / Commission" class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>
+              <div><label class="block font-bold mb-1">Notes</label><input name="notes" placeholder="Optional description..." class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div>
+              <button type="submit" class="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold">Save Entry to Ledger</button>
+            </form>
+          `
+        );
+        m.querySelector('#cb-entry-form').onsubmit = async (e) => {
+          e.preventDefault();
+          const fd = new FormData(e.target);
+          try {
+            await recordCapitalOrIncomeTransaction({
+              entryType: fd.get('entryType').toString(),
+              amount: Number(fd.get('amount')),
+              date: fd.get('date').toString(),
+              accountId: fd.get('accountId').toString(),
+              partyName: fd.get('partyName').toString(),
+              notes: fd.get('notes').toString(),
+            });
+            m.remove();
+          } catch (err) {
+            showToast(err?.message || 'Could not record entry', 'error');
+          }
         };
       }
 
@@ -5323,6 +6932,7 @@
           switch (state.currentView) {
             case 'sales': viewHtml = renderSalesView(); break;
             case 'purchases': viewHtml = renderPurchasesView(); break;
+            case 'returns': viewHtml = renderReturnsView(); break;
             case 'products': viewHtml = renderProductsView(); break;
             case 'customers': viewHtml = renderCustomersView(); break;
             case 'suppliers': viewHtml = renderSuppliersView(); break;
@@ -5341,6 +6951,10 @@
         }
 
         if (window.lucide) window.lucide.createIcons();
+        const openSupLedger = document.getElementById('sup-ledger-root');
+        if (openSupLedger && typeof openSupLedger._refreshLedger === 'function') {
+          openSupLedger._refreshLedger();
+        }
 
         if (activeId) {
           const restored = document.getElementById(activeId);
@@ -5762,41 +7376,31 @@
           };
         }
 
-        // Return sale/purchase
+        // Return sale/purchase & Returns View
+        const newSaleRet = document.getElementById('btn-new-sale-return');
+        if (newSaleRet) newSaleRet.onclick = () => openReturnModal('SALE_RETURN');
+        const newPurRet = document.getElementById('btn-new-purchase-return');
+        if (newPurRet) newPurRet.onclick = () => openReturnModal('PURCHASE_RETURN');
+        const retSearch = document.getElementById('ret-search-input');
+        if (retSearch) retSearch.oninput = () => { state.returnsSearch = retSearch.value; render(); };
+        const retType = document.getElementById('ret-type-filter');
+        if (retType) retType.onchange = () => { state.returnsTypeFilter = retType.value; render(); };
+        document.querySelectorAll('[data-print-return]').forEach((b) => {
+          b.onclick = () => {
+            const ret = state.returns.find((x) => x.id === b.dataset.printReturn);
+            if (ret) openReturnPrintModal(ret);
+          };
+        });
         document.querySelectorAll('[data-return-sale]').forEach((b) => {
-          b.onclick = async () => {
+          b.onclick = () => {
             const s = state.sales.find((x) => x.id === b.dataset.returnSale);
-            if (!s) return;
-            const ok = await askConfirm('Process Sales Return?', `Return all items from ${s.invoiceNumber} back into stock and refund ${s.paidAmount}?`, 'Process Return');
-            if (ok) {
-              await createReturnRecord({
-                type: 'SALE_RETURN',
-                referenceId: s.invoiceNumber,
-                partyId: s.customerId,
-                partyName: s.customerName,
-                items: s.items || [],
-                totalRefund: s.paidAmount || s.total,
-                accountId: s.accountId || state.accounts[0]?.id,
-              });
-            }
+            if (s) openReturnModal('SALE_RETURN', s);
           };
         });
         document.querySelectorAll('[data-return-purchase]').forEach((b) => {
-          b.onclick = async () => {
+          b.onclick = () => {
             const p = state.purchases.find((x) => x.id === b.dataset.returnPurchase);
-            if (!p) return;
-            const ok = await askConfirm('Process Purchase Return?', `Return items from ${p.billNumber} to supplier?`, 'Process Return');
-            if (ok) {
-              await createReturnRecord({
-                type: 'PURCHASE_RETURN',
-                referenceId: p.billNumber,
-                partyId: p.supplierId,
-                partyName: p.supplierName,
-                items: p.items || [],
-                totalRefund: p.paidAmount || p.total,
-                accountId: p.accountId || state.accounts[0]?.id,
-              });
-            }
+            if (p) openReturnModal('PURCHASE_RETURN', p);
           };
         });
 
@@ -5935,39 +7539,66 @@
 
         // Suppliers
         const suSearch = document.getElementById('sup-search-input');
-        if (suSearch) suSearch.oninput = () => { state.suppliersSearch = suSearch.value; render(); };
+        if (suSearch) {
+          suSearch.oninput = () => {
+            const pos = suSearch.selectionStart;
+            state.suppliersSearch = suSearch.value;
+            render();
+            const el = document.getElementById('sup-search-input');
+            if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch {} }
+          };
+        }
+        const suFilter = document.getElementById('sup-filter-select');
+        if (suFilter) suFilter.onchange = () => { state.suppliersFilter = suFilter.value; render(); };
+        const suSort = document.getElementById('sup-sort-select');
+        if (suSort) suSort.onchange = () => { state.suppliersSort = suSort.value; render(); };
+        const expSupCsv = document.getElementById('btn-export-suppliers-csv');
+        if (expSupCsv) {
+          expSupCsv.onclick = () => {
+            const rows = [
+              ['Supplier', 'Company', 'Phone', 'Email', 'Address', 'Opening Balance', 'Total Purchased', 'Total Paid', 'Current Due'],
+              ...state.suppliers.map((s) => [s.name, s.company, s.phone, s.email, s.address, s.openingBalance || 0, s.totalPurchased || 0, s.totalPaid || 0, s.currentDue || 0]),
+            ];
+            const blob = new Blob([rows.map((r) => r.map((x) => `"${String(x ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `dms-suppliers-${new Date().toISOString().slice(0, 10)}.csv`;
+            a.click();
+          };
+        }
         const addSup = document.getElementById('btn-add-supplier');
         if (addSup) addSup.onclick = () => openSupplierModal(null);
         document.querySelectorAll('[data-edit-sup]').forEach((b) => (b.onclick = () => openSupplierModal(state.suppliers.find((x) => x.id === b.dataset.editSup))));
         document.querySelectorAll('[data-pay-sup]').forEach((b) => {
           b.onclick = () => {
             const sup = state.suppliers.find((x) => x.id === b.dataset.paySup);
-            if (!sup) return;
-            const m = openModal(
-              `Pay Supplier — ${sup.name}`,
-              `<form id="pay-sup-form" class="space-y-3 text-xs"><div>Payable Balance: <strong class="text-rose-600">${fmtMoney(sup.currentDue || 0, state.currentBusiness.currency)}</strong></div><div><label class="block font-bold mb-1">Amount Paid *</label><input name="amount" type="number" min="1" step="any" required value="${sup.currentDue || 0}" class="w-full px-3 py-2 rounded-xl border border-slate-300" /></div><div><label class="block font-bold mb-1">Pay From Account</label><select name="accountId" class="w-full px-3 py-2 rounded-xl border border-slate-300">${state.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></div><button type="submit" class="w-full py-2.5 rounded-xl bg-sky-600 text-white font-bold">Record Supplier Payment</button></form>`
-            );
-            m.querySelector('#pay-sup-form').onsubmit = async (e) => {
-              e.preventDefault();
-              const fd = new FormData(e.target);
-              await paySupplier(sup.id, Number(fd.get('amount')), fd.get('accountId').toString());
-              m.remove();
-            };
+            if (sup) openPaySupplierModal(sup);
           };
         });
         document.querySelectorAll('[data-ledger-sup]').forEach((b) => {
+          b.onclick = () => openSupplierLedgerModal(b.dataset.ledgerSup, 'statement');
+        });
+        document.querySelectorAll('[data-purchase-sup]').forEach((b) => {
           b.onclick = () => {
-            const sup = state.suppliers.find((x) => x.id === b.dataset.ledgerSup);
-            const bills = state.purchases.filter((p) => p.supplierId === sup.id);
-            openModal(
-              `Supplier Ledger — ${sup.name}`,
-              `<table class="w-full text-xs text-left"><thead class="bg-slate-50"><tr><th class="p-2">Bill</th><th class="p-2">Date</th><th class="p-2">Total</th><th class="p-2">Due</th></tr></thead><tbody>${bills.map((p) => `<tr class="border-t"><td class="p-2 font-bold">${esc(p.billNumber)}</td><td class="p-2">${esc((p.createdAt || '').slice(0, 10))}</td><td class="p-2">${fmtMoney(p.total, state.currentBusiness.currency)}</td><td class="p-2 text-rose-600">${fmtMoney(p.dueAmount, state.currentBusiness.currency)}</td></tr>`).join('') || '<tr><td colspan="4" class="p-4 text-center text-slate-400">No purchase bills yet.</td></tr>'}</tbody></table>`,
-              'max-w-xl'
-            );
+            state.currentView = 'purchases';
+            state.purchasesTab = 'create';
+            state.purchasesSupplierId = b.dataset.purchaseSup;
+            render();
           };
         });
 
-        // Accounts
+        // Accounts & Cashbook
+        document.querySelectorAll('[data-acc-tab]').forEach((b) => (b.onclick = () => { state.accountsTab = b.dataset.accTab; render(); }));
+        const cbSearch = document.getElementById('cb-search-input');
+        if (cbSearch) cbSearch.oninput = () => { state.cashbookSearch = cbSearch.value; render(); };
+        const cbFilter = document.getElementById('cb-dir-filter');
+        if (cbFilter) cbFilter.onchange = () => { state.cashbookFilterType = cbFilter.value; render(); };
+        const capBtn = document.getElementById('btn-record-capital');
+        if (capBtn) capBtn.onclick = () => openCashbookEntryModal('CAPITAL_IN');
+        const incBtn = document.getElementById('btn-record-other-income');
+        if (incBtn) incBtn.onclick = () => openCashbookEntryModal('OTHER_INCOME');
+        const drawBtn = document.getElementById('btn-record-drawing');
+        if (drawBtn) drawBtn.onclick = () => openCashbookEntryModal('DRAWING_OUT');
         const addAcc = document.getElementById('btn-add-account');
         if (addAcc) {
           addAcc.onclick = () => {
@@ -6031,11 +7662,27 @@
         const csvBtn = document.getElementById('btn-export-csv');
         if (csvBtn) {
           csvBtn.onclick = () => {
-            const rows = [['Invoice', 'Date', 'Customer', 'Total', 'Paid', 'Due', 'Status'], ...state.sales.map((s) => [s.invoiceNumber, (s.createdAt || '').slice(0, 10), s.customerName, s.total, s.paidAmount, s.dueAmount, s.status])];
-            const blob = new Blob([rows.map((r) => r.map((x) => `"${String(x || '').replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
+            let rows = [];
+            let name = state.reportsType.toLowerCase();
+            if (state.reportsType === 'DAYBOOK') {
+              rows = [['Date', 'Type', 'Direction', 'Account', 'Party', 'Reference', 'Notes', 'Amount'], ...state.cashbook.map((e) => [(e.date || e.createdAt || '').slice(0, 10), e.entryType, e.direction, e.accountName, e.partyName, e.referenceId, e.notes, e.amount])];
+            } else if (state.reportsType === 'RETURNS') {
+              rows = [['Return #', 'Type', 'Reference', 'Party', 'Total', 'Cash Refund', 'Due Adjusted', 'Reason', 'Date'], ...state.returns.map((r) => [r.returnNumber || r.id, r.type, r.referenceId, r.partyName, r.totalAmount || r.totalRefund, r.cashRefund, r.dueAdjusted, r.reason, (r.createdAt || '').slice(0, 10)])];
+            } else if (state.reportsType === 'PURCHASES') {
+              rows = [['Bill #', 'Date', 'Supplier', 'Total', 'Paid', 'Due', 'Status'], ...state.purchases.map((p) => [p.billNumber, (p.createdAt || '').slice(0, 10), p.supplierName, p.total, p.paidAmount, p.dueAmount, p.status])];
+            } else if (state.reportsType === 'STOCK') {
+              rows = [['Product', 'SKU', 'Stock', 'Unit', 'Cost', 'Value'], ...state.products.map((p) => [p.name, p.sku, p.currentStock, p.unit, p.purchasePrice, (p.currentStock || 0) * (p.purchasePrice || 0)])];
+            } else if (state.reportsType === 'PAYABLES') {
+              rows = [['Supplier', 'Phone', 'Total Purchased', 'Payable Due'], ...state.suppliers.map((s) => [s.name, s.phone, s.totalPurchased, s.currentDue])];
+            } else if (state.reportsType === 'DUES') {
+              rows = [['Customer', 'Phone', 'Total Billed', 'Receivable Due'], ...state.customers.map((c) => [c.name, c.phone, c.totalPurchases, c.currentDue])];
+            } else {
+              rows = [['Invoice', 'Date', 'Customer', 'Total', 'Paid', 'Due', 'Status'], ...state.sales.map((s) => [s.invoiceNumber, (s.createdAt || '').slice(0, 10), s.customerName, s.total, s.paidAmount, s.dueAmount, s.status])];
+            }
+            const blob = new Blob([rows.map((r) => r.map((x) => `"${String(x ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = `dms-sales-${new Date().toISOString().slice(0, 10)}.csv`;
+            a.download = `dms-${name}-${new Date().toISOString().slice(0, 10)}.csv`;
             a.click();
           };
         }

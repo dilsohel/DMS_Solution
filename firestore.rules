@@ -110,6 +110,25 @@ service cloud.firestore {
         allow write: if isBusinessMember(businessId);
       }
 
+      // Supplier Payments ledger subcollection (Append only, immutable financial trail)
+      match /supplierPayments/{paymentId} {
+        allow read: if isBusinessMember(businessId);
+        allow create: if isValidId(paymentId) &&
+          isBusinessMember(businessId) &&
+          request.resource.data.keys().hasAll(['id', 'supplierId', 'amount', 'createdBy', 'createdAt']) &&
+          request.resource.data.keys().hasOnly(['id', 'paymentNumber', 'supplierId', 'supplierName', 'amount', 'accountId', 'accountName', 'paymentMethod', 'purchaseId', 'billNumber', 'date', 'notes', 'createdBy', 'createdByName', 'createdAt']) &&
+          request.resource.data.id == paymentId &&
+          request.resource.data.supplierId is string &&
+          request.resource.data.supplierId.size() > 0 &&
+          request.resource.data.supplierId.size() <= 128 &&
+          request.resource.data.amount is number &&
+          request.resource.data.amount > 0 &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.createdAt is string &&
+          request.resource.data.createdAt.size() <= 40;
+        allow update, delete: if false;
+      }
+
       // Sales subcollection
       match /sales/{saleId} {
         allow read: if isBusinessMember(businessId);
@@ -144,6 +163,24 @@ service cloud.firestore {
       match /returns/{returnId} {
         allow read: if isBusinessMember(businessId);
         allow write: if isBusinessMember(businessId);
+      }
+
+      // Cashbook & General Ledger subcollection (Append only, immutable financial trail)
+      match /cashbook/{entryId} {
+        allow read: if isBusinessMember(businessId);
+        allow create: if isValidId(entryId) &&
+          isBusinessMember(businessId) &&
+          request.resource.data.keys().hasAll(['id', 'entryType', 'direction', 'amount', 'createdBy', 'createdAt']) &&
+          request.resource.data.keys().hasOnly(['id', 'entryType', 'direction', 'amount', 'accountId', 'accountName', 'partyName', 'referenceId', 'notes', 'date', 'createdBy', 'createdByName', 'createdAt']) &&
+          request.resource.data.id == entryId &&
+          request.resource.data.entryType in ['SALE', 'PURCHASE', 'EXPENSE', 'DUE_COLLECTION', 'SUPPLIER_PAYMENT', 'SALE_RETURN', 'PURCHASE_RETURN', 'CAPITAL_IN', 'DRAWING_OUT', 'OTHER_INCOME', 'LOAN_IN', 'LOAN_REPAY', 'TRANSFER_IN', 'TRANSFER_OUT'] &&
+          request.resource.data.direction in ['IN', 'OUT'] &&
+          request.resource.data.amount is number &&
+          request.resource.data.amount >= 0 &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.createdAt is string &&
+          request.resource.data.createdAt.size() <= 40;
+        allow update, delete: if false;
       }
 
       // Audit logs (Append only, never updated or deleted)
