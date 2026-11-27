@@ -19,6 +19,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
     <style>
       :root {
         --dms-bg: #f8fbff;
@@ -255,19 +256,74 @@
         return clean;
       }
 
+      function compressImageToDataUrl(file, maxDim = 360, maxChars = 180000) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error('Failed to read image file'));
+          reader.onload = () => {
+            const rawDataUrl = String(reader.result || '');
+            const img = new Image();
+            img.onload = () => {
+              try {
+                let w = img.naturalWidth || img.width || maxDim;
+                let h = img.naturalHeight || img.height || maxDim;
+                if (w > maxDim || h > maxDim) {
+                  if (w >= h) {
+                    h = Math.max(1, Math.round((h * maxDim) / w));
+                    w = maxDim;
+                  } else {
+                    w = Math.max(1, Math.round((w * maxDim) / h));
+                    h = maxDim;
+                  }
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, w, h);
+                let out = canvas.toDataURL('image/png');
+                if (out.length > maxChars) out = canvas.toDataURL('image/webp', 0.85);
+                if (out.length > maxChars) out = canvas.toDataURL('image/jpeg', 0.82);
+                if (out.length > maxChars) out = canvas.toDataURL('image/jpeg', 0.65);
+                resolve(out);
+              } catch {
+                resolve(rawDataUrl);
+              }
+            };
+            img.onerror = () => resolve(rawDataUrl);
+            img.src = rawDataUrl;
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+
       async function uploadFileToStorage(file, path) {
+        const compressedPromise = compressImageToDataUrl(file);
         try {
           const storageRef = ref(storage, path);
-          const snapshot = await uploadBytes(storageRef, file);
-          return await getDownloadURL(snapshot.ref);
-        } catch (err) {
-          return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(file);
-          });
+          const cloudUrl = await Promise.race([
+            uploadBytes(storageRef, file).then((snap) => getDownloadURL(snap.ref)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Storage timeout')), 3500)),
+          ]);
+          if (cloudUrl) return cloudUrl;
+        } catch {}
+        return await compressedPromise;
+      }
+
+      function getShopInitials(name) {
+        const parts = String(name || 'Shop').trim().split(/\s+/).filter(Boolean);
+        if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+        return (parts[0] || 'S').slice(0, 2).toUpperCase();
+      }
+
+      function renderShopLogoHtml(biz, sizeClass = 'w-9 h-9', textClass = 'text-xs') {
+        const name = biz?.name || 'Shop';
+        const initials = esc(getShopInitials(name));
+        const logoUrl = String(biz?.logoUrl || '').trim();
+        if (!logoUrl) {
+          return `<div class="${sizeClass} rounded-xl bg-gradient-to-br from-sky-600 to-emerald-600 text-white font-extrabold ${textClass} flex items-center justify-center shrink-0 shadow-xs border border-sky-300/60" title="${esc(name)}">${initials}</div>`;
         }
+        return `<img src="${esc(logoUrl)}" alt="${esc(name)}" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" class="${sizeClass} rounded-xl object-contain bg-white border border-sky-200 p-0.5 shrink-0" /><div style="display:none" class="${sizeClass} rounded-xl bg-gradient-to-br from-sky-600 to-emerald-600 text-white font-extrabold ${textClass} items-center justify-center shrink-0 shadow-xs border border-sky-300/60" title="${esc(name)}">${initials}</div>`;
       }
 
       function esc(val) {
@@ -285,7 +341,7 @@
         return `${esc(currency)}${num.toLocaleString()}`;
       }
 
-      function showToast(message, type = 'success') {
+      function showToast(message, type = 'success', durationMs = 4000) {
         const container = document.getElementById('app-toasts');
         if (!container) return;
         const id = 'toast_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
@@ -309,7 +365,7 @@
         setTimeout(() => {
           const t = document.getElementById(id);
           if (t) t.remove();
-        }, 4000);
+        }, durationMs);
       }
 
       function askConfirm(title, message, confirmLabel = 'Confirm', danger = true) {
@@ -399,7 +455,14 @@
         authShowGuide: false,
         authLoadingSubmit: false,
         billingNoticeDismissedMonth: sessionStorage.getItem('dms_billing_dismissed_month') || '',
+        urgentNotifiedKey: sessionStorage.getItem('dms_urgent_notified_key') || '',
         billingSelectedMethod: 'bkash',
+        lowStockDismissedSig: '',
+        lowStockBannerExpanded: false,
+        lowStockInitializedBiz: '',
+        lowStockPrevAboveIds: new Set(),
+        lowStockPrevStocks: {},
+        desktopNotifyPerm: typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
 
         // Wizard state
         wizardStep: 1,
@@ -706,8 +769,10 @@
         const billingActive = !beforeGlobalStart && !joinedAfterThisMonthCutoff;
         const isNoticeWindow =
           billingActive && !isPaid && day >= BILLING_CONFIG.noticeStartDay && day <= BILLING_CONFIG.noticeEndDay;
+        const isUrgent = billingActive && !isPaid && (day === 9 || day === 10);
         const isLocked = billingActive && !isPaid && day > BILLING_CONFIG.noticeEndDay;
-        const isDismissed = state.billingNoticeDismissedMonth === monthKey;
+        const dismissKey = isUrgent ? `urgent_${monthKey}` : monthKey;
+        const isDismissed = state.billingNoticeDismissedMonth === dismissKey;
         const daysLeft = Math.max(0, BILLING_CONFIG.noticeEndDay - day);
         return {
           monthKey,
@@ -722,8 +787,204 @@
           latestRequest,
           approvedRecord,
           isNoticeWindow,
+          isUrgent,
           isLocked,
+          dismissKey,
           isDismissed,
+        };
+      }
+
+      function maybeTriggerUrgentBillingAlert() {
+        if (!state.user || isSuperAdminUser() || state.authLoading) return;
+        const b = getBillingStatus();
+        if (!b.isUrgent || b.isPending) return;
+        const alertKey = `${b.monthKey}-${b.day}-${state.user.uid}`;
+        if (state.urgentNotifiedKey === alertKey) return;
+        state.urgentNotifiedKey = alertKey;
+        sessionStorage.setItem('dms_urgent_notified_key', alertKey);
+        const deadlineText = b.day === 10 ? 'আজ ১০ তারিখ — পেমেন্টের শেষ দিন!' : 'আগামীকাল ১০ তারিখ — পেমেন্টের শেষ সময়!';
+        showToast(`URGENT: ${b.monthLabel} মাসের ৳${BILLING_CONFIG.monthlyFee} পেমেন্ট বাকি (${deadlineText})`, 'error');
+        try {
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            new Notification('URGENT: DMS Solution Monthly Payment Due', {
+              body: `${b.monthLabel} - ৳${BILLING_CONFIG.monthlyFee} due (${deadlineText})`,
+            });
+          }
+        } catch {}
+      }
+
+      function getLowStockProducts() {
+        return state.products
+          .filter((p) => Number(p.currentStock || 0) <= Number(p.minStockAlert ?? 0))
+          .slice()
+          .sort((a, b) => {
+            const sa = Number(a.currentStock || 0);
+            const sb = Number(b.currentStock || 0);
+            if ((sa <= 0) !== (sb <= 0)) return sa <= 0 ? -1 : 1;
+            const ga = sa - Number(a.minStockAlert ?? 0);
+            const gb = sb - Number(b.minStockAlert ?? 0);
+            if (ga !== gb) return ga - gb;
+            return (a.name || '').localeCompare(b.name || '');
+          });
+      }
+
+      function getLowStockSignature(items) {
+        return items
+          .map((p) => `${p.id}:${Number(p.currentStock || 0)}:${Number(p.minStockAlert ?? 0)}`)
+          .sort()
+          .join('|');
+      }
+
+      function triggerLowStockDesktopAlert(items, isTransition = false) {
+        if (!items || items.length === 0) return;
+        const preview = items
+          .slice(0, 3)
+          .map((p) => `${p.name} (${Number(p.currentStock || 0)}/${Number(p.minStockAlert ?? 0)} ${p.unit || 'pcs'})`)
+          .join(', ');
+        const extra = items.length > 3 ? ` +${items.length - 3} more` : '';
+        const prefix = isTransition ? 'URGENT LOW STOCK ALERT' : 'Low Stock Alert';
+        showToast(`${prefix}: ${preview}${extra}`, 'error', 7500);
+
+        try {
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            const bizName = state.currentBusiness?.name || 'DMS Solution';
+            const n = new Notification(`⚠️ ${prefix} — ${bizName}`, {
+              body: `${items.length} product(s) at or below Min Alert: ${preview}${extra}. Click to view & restock.`,
+              icon: state.currentBusiness?.logoUrl || LOGO_URL,
+              tag: `dms-low-stock-${state.currentBusiness?.id || 'app'}`,
+              requireInteraction: isTransition,
+            });
+            n.onclick = () => {
+              try { window.focus(); } catch {}
+              state.currentView = 'products';
+              state.productsStockFilter = 'LOW';
+              render();
+              try { n.close(); } catch {}
+            };
+          }
+        } catch {}
+      }
+
+      async function requestDesktopNotificationPermission() {
+        if (typeof Notification === 'undefined') {
+          state.desktopNotifyPerm = 'unsupported';
+          showToast('Desktop notifications are not supported in this browser.', 'info');
+          render();
+          return;
+        }
+        try {
+          const perm = await Notification.requestPermission();
+          state.desktopNotifyPerm = perm;
+          if (perm === 'granted') {
+            showToast('Desktop low-stock alerts enabled! You will get real-time popups when stock drops.');
+            const lowItems = getLowStockProducts();
+            const bizName = state.currentBusiness?.name || 'DMS Solution';
+            const n = new Notification(`Desktop Alerts Active — ${bizName}`, {
+              body: lowItems.length > 0
+                ? `${lowItems.length} product(s) currently below Min Alert. Click to view & restock.`
+                : 'You will be notified immediately whenever a product falls below its Min Alert.',
+              icon: state.currentBusiness?.logoUrl || LOGO_URL,
+              tag: 'dms-low-stock-setup',
+            });
+            n.onclick = () => {
+              try { window.focus(); } catch {}
+              if (lowItems.length > 0) {
+                state.currentView = 'products';
+                state.productsStockFilter = 'LOW';
+                render();
+              }
+              try { n.close(); } catch {}
+            };
+          } else if (perm === 'denied') {
+            showToast('Browser notifications are blocked. Enable Notifications for this site in your browser settings.', 'error', 7000);
+          }
+        } catch (err) {
+          showToast('Could not enable desktop notifications: ' + (err?.message || 'Permission error'), 'error');
+        }
+        render();
+      }
+
+      function generatePaymentQrCode(method = 'bkash', options = {}) {
+        const isNagad = String(method || '').toLowerCase() === 'nagad';
+        const number = options.number || (isNagad ? BILLING_CONFIG.nagad : BILLING_CONFIG.bkash);
+        const size = Number(options.size || 104);
+        const color = options.color || (isNagad ? '#c2410c' : '#be185d');
+        const payload = String(options.payload || number);
+
+        try {
+          if (typeof window.qrcode === 'function') {
+            const qr = window.qrcode(0, 'M');
+            qr.addData(payload);
+            qr.make();
+            const count = qr.getModuleCount();
+            const pad = 2;
+            const total = count + pad * 2;
+            let rects = '';
+            for (let r = 0; r < count; r++) {
+              for (let c = 0; c < count; c++) {
+                if (qr.isDark(r, c)) {
+                  rects += `<rect x="${c + pad}" y="${r + pad}" width="1" height="1" fill="${color}" />`;
+                }
+              }
+            }
+            return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" width="${size}" height="${size}" shape-rendering="crispEdges" class="rounded-lg bg-white border border-slate-200 block" role="img" aria-label="${esc(isNagad ? 'Nagad' : 'bKash')} payment QR code for ${esc(number)}"><rect width="${total}" height="${total}" fill="#ffffff"/>${rects}</svg>`;
+          }
+        } catch (err) {
+          console.warn('Local QR generation fallback:', err?.message || err);
+        }
+
+        return `<img src="https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(payload)}" alt="${esc(isNagad ? 'Nagad' : 'bKash')} QR" width="${size}" height="${size}" class="rounded-lg bg-white border border-slate-200 block" referrerpolicy="no-referrer" />`;
+      }
+
+      function openQrZoomModal(method = 'bkash') {
+        const isNagad = String(method || '').toLowerCase() === 'nagad';
+        const label = isNagad ? 'Nagad' : 'bKash';
+        const number = isNagad ? BILLING_CONFIG.nagad : BILLING_CONFIG.bkash;
+        const badgeCls = isNagad ? 'bg-orange-600 text-white' : 'bg-pink-600 text-white';
+        const btnCls = isNagad
+          ? 'bg-orange-600 hover:bg-orange-700 text-white'
+          : 'bg-pink-600 hover:bg-pink-700 text-white';
+        const qrSvg = generatePaymentQrCode(method, { number, size: 220 });
+
+        const modal = openModal(
+          `${label} Scan & Pay QR (৳${BILLING_CONFIG.monthlyFee})`,
+          `
+            <div class="text-center space-y-4 text-xs">
+              <div class="inline-flex items-center gap-2 px-3 py-1 rounded-lg ${badgeCls} font-extrabold uppercase text-[11px]">
+                <span>${esc(label)} Send Money • ৳${BILLING_CONFIG.monthlyFee}</span>
+              </div>
+              <div class="flex justify-center">
+                <div class="p-3 rounded-2xl bg-white border-2 ${isNagad ? 'border-orange-300' : 'border-pink-300'} shadow-md inline-block">
+                  ${qrSvg}
+                </div>
+              </div>
+              <div>
+                <div class="text-slate-500">Receiver Number</div>
+                <div class="text-xl font-extrabold font-mono text-slate-900 tracking-wide">${esc(number)}</div>
+                <p class="text-[11px] text-slate-600 mt-1">ফোনের ক্যামেরা বা QR Scanner দিয়ে স্ক্যান করে নাম্বার কপি করুন এবং <strong>৳৫০০ Send Money</strong> করে TrxID সাবমিট করুন।</p>
+              </div>
+              <div class="flex flex-wrap justify-center gap-2">
+                <button type="button" id="btn-qr-copy-num" class="px-4 py-2.5 rounded-xl ${btnCls} font-bold">Copy ${esc(label)} Number</button>
+                <button type="button" id="btn-qr-download" class="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold">Download QR</button>
+              </div>
+            </div>
+          `,
+          'max-w-sm'
+        );
+
+        modal.querySelector('#btn-qr-copy-num').onclick = () => {
+          navigator.clipboard?.writeText(number);
+          showToast(`${label} নাম্বার ${number} কপি করা হয়েছে!`, 'info');
+        };
+        modal.querySelector('#btn-qr-download').onclick = () => {
+          const svgEl = modal.querySelector('svg');
+          if (!svgEl) return showToast('Right-click QR image to save.', 'info');
+          const blob = new Blob([svgEl.outerHTML], { type: 'image/svg+xml' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `dms-${label.toLowerCase()}-qr-${number}.svg`;
+          a.click();
+          showToast(`${label} QR ডাউনলোড হয়েছে!`);
         };
       }
 
@@ -932,6 +1193,11 @@
         state.auditLogs = [];
         state.salesCart = [];
         state.purchasesCart = [];
+        state.lowStockDismissedSig = '';
+        state.lowStockBannerExpanded = false;
+        state.lowStockInitializedBiz = '';
+        state.lowStockPrevAboveIds = new Set();
+        state.lowStockPrevStocks = {};
       }
 
       function subscribeBusinessData(bizId) {
@@ -958,6 +1224,41 @@
             q,
             (snap) => {
               state[stateKey] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+              if (colName === 'products') {
+                const lowItems = getLowStockProducts();
+                const aboveIds = new Set(
+                  state.products
+                    .filter((p) => Number(p.currentStock || 0) > Number(p.minStockAlert ?? 0))
+                    .map((p) => p.id)
+                );
+                const nextStocks = {};
+                state.products.forEach((p) => {
+                  nextStocks[p.id] = Number(p.currentStock || 0);
+                });
+                const canAlert = state.user && !isSuperAdminUser() && !getBillingStatus().isLocked;
+
+                if (state.lowStockInitializedBiz !== bizId) {
+                  state.lowStockInitializedBiz = bizId;
+                  state.lowStockPrevAboveIds = aboveIds;
+                  state.lowStockPrevStocks = nextStocks;
+                  if (canAlert && lowItems.length > 0) {
+                    triggerLowStockDesktopAlert(lowItems, false);
+                  }
+                } else {
+                  const newlyLow = lowItems.filter((p) => {
+                    const wasAbove = state.lowStockPrevAboveIds.has(p.id);
+                    const prevQty = state.lowStockPrevStocks[p.id];
+                    const droppedFurther = prevQty !== undefined && Number(p.currentStock || 0) < prevQty;
+                    return wasAbove || droppedFurther;
+                  });
+                  state.lowStockPrevAboveIds = aboveIds;
+                  state.lowStockPrevStocks = nextStocks;
+                  if (canAlert && newlyLow.length > 0) {
+                    state.lowStockDismissedSig = '';
+                    triggerLowStockDesktopAlert(newlyLow, true);
+                  }
+                }
+              }
               if (colName === 'members' && state.user && state.currentBusiness) {
                 if (state.currentBusiness.ownerId === state.user.uid) {
                   state.currentRole = 'owner';
@@ -2162,10 +2463,11 @@
                           </div>
                         </div>
                         <div>
-                          <label class="block text-xs font-bold text-slate-700 mb-1">Business Logo (Optional Upload or URL)</label>
-                          <div class="flex items-center gap-3">
+                          <label class="block text-xs font-bold text-slate-700 mb-1">Shop Logo (Optional Upload or URL)</label>
+                          <div class="flex flex-wrap items-center gap-3">
+                            <div id="wizard-logo-preview">${renderShopLogoHtml({ name: f.name || 'Shop', logoUrl: f.logoUrl }, 'w-11 h-11', 'text-xs')}</div>
                             <input type="file" id="wizard-logo-file" accept="image/*" class="text-xs text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-sky-50 file:text-sky-700 hover:file:bg-sky-100" />
-                            ${f.logoUrl ? `<img src="${esc(f.logoUrl)}" referrerpolicy="no-referrer" class="w-10 h-10 rounded-lg object-contain border border-slate-200 bg-white" />` : ''}
+                            <input type="url" id="wizard-logo-url" name="logoUrl" value="${esc(f.logoUrl || '')}" placeholder="or paste logo image URL..." class="flex-1 min-w-[180px] px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-xs text-slate-900 focus:outline-none focus:border-sky-500 focus:bg-white" />
                           </div>
                         </div>
                       </div>`
@@ -2310,32 +2612,147 @@
                   </button>
                 </div>
               </div>`
-            : `<div id="billing-notice-banner" class="mb-6 rounded-2xl bg-gradient-to-r from-amber-50 via-white to-sky-50 border border-amber-300 shadow-md p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden animate-fade-in">
+            : `<div id="billing-notice-banner" class="mb-6 rounded-2xl ${billing.isUrgent ? 'bg-gradient-to-r from-rose-50 via-red-50/70 to-amber-50 border-2 border-rose-500 shadow-lg shadow-rose-500/15' : 'bg-gradient-to-r from-amber-50 via-white to-sky-50 border border-amber-300 shadow-md'} p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden animate-fade-in">
                 <div class="flex items-start gap-3.5 cursor-pointer flex-1" id="btn-banner-open-pay">
-                  <div class="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 text-amber-700 flex items-center justify-center shrink-0">
-                    <i data-lucide="bell-ring" class="w-5 h-5"></i>
+                  <div class="w-11 h-11 rounded-2xl ${billing.isUrgent ? 'bg-rose-600 border-rose-700 text-white animate-pulse' : 'bg-amber-100 border-amber-300 text-amber-700'} border flex items-center justify-center shrink-0">
+                    <i data-lucide="${billing.isUrgent ? 'alert-triangle' : 'bell-ring'}" class="w-5 h-5"></i>
                   </div>
                   <div>
                     <div class="flex flex-wrap items-center gap-2">
-                      <span class="px-2 py-0.5 rounded-md bg-amber-500 text-white text-[10px] font-extrabold uppercase">Monthly Payment Notice (৫–১০ তারিখ)</span>
+                      ${
+                        billing.isUrgent
+                          ? `<span class="px-2.5 py-0.5 rounded-md bg-rose-600 text-white text-[10px] font-extrabold uppercase tracking-wider animate-pulse">URGENT • শেষ সময় (${billing.day === 10 ? 'আজই শেষ দিন!' : 'আগামীকাল শেষ দিন!'})</span>`
+                          : `<span class="px-2 py-0.5 rounded-md bg-amber-500 text-white text-[10px] font-extrabold uppercase">Monthly Payment Notice (৫–১০ তারিখ)</span>`
+                      }
                       <span class="px-2 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-extrabold">ফি: ৫০০ টাকা (৳500)</span>
-                      <span class="text-[11px] font-bold text-rose-600">${billing.daysLeft === 0 ? 'আজই শেষ দিন (১০ তারিখ)!' : `বাকি আছে মাত্র ${billing.daysLeft} দিন`}</span>
+                      <span class="text-[11px] font-bold text-rose-700">${billing.daysLeft === 0 ? 'আজই শেষ দিন (১০ তারিখ)!' : `বাকি আছে মাত্র ${billing.daysLeft} দিন`}</span>
                     </div>
-                    <h3 class="text-sm font-extrabold text-slate-900 mt-1">${esc(billing.monthLabel)} মাসের সাবস্ক্রিপশন ফি ৫০০ টাকা (৳500) পেমেন্ট করতে এখানে ক্লিক করুন</h3>
-                    <p class="text-xs text-slate-600 mt-0.5">প্রতি মাসের ৫ থেকে ১০ তারিখের মধ্যে bKash বা Nagad-এ <strong>৫০০ টাকা (৳500)</strong> Send Money করে Transaction Number সাবমিট করুন। অ্যাডমিন অ্যাপ্রুভ করলেই অ্যাক্সেস চালু থাকবে, ১০ তারিখের মধ্যে পেমেন্ট না করলে সাইট বন্ধ হয়ে যাবে।</p>
+                    <h3 class="text-sm font-extrabold ${billing.isUrgent ? 'text-rose-950' : 'text-slate-900'} mt-1">
+                      ${billing.isUrgent ? 'জরুরি নোটিশ: ' : ''}${esc(billing.monthLabel)} মাসের সাবস্ক্রিপশন ফি ৫০০ টাকা (৳500) পেমেন্ট করতে এখানে ক্লিক করুন
+                    </h3>
+                    <p class="text-xs ${billing.isUrgent ? 'text-rose-900 font-medium' : 'text-slate-600'} mt-0.5">
+                      ${
+                        billing.isUrgent
+                          ? `আজ ${billing.day} তারিখ! ১০ তারিখের মধ্যে bKash বা Nagad-এ <strong>৫০০ টাকা (৳500)</strong> Send Money করে TrxID সাবমিট না করলে ১০ তারিখের পর সাইট অটোমেটিক বন্ধ হয়ে যাবে।`
+                          : 'প্রতি মাসের ৫ থেকে ১০ তারিখের মধ্যে bKash বা Nagad-এ <strong>৫০০ টাকা (৳500)</strong> Send Money করে Transaction Number সাবমিট করুন। অ্যাডমিন অ্যাপ্রুভ করলেই অ্যাক্সেস চালু থাকবে, ১০ তারিখের মধ্যে পেমেন্ট না করলে সাইট বন্ধ হয়ে যাবে।'
+                      }
+                    </p>
                     ${billing.isRejected ? `<p class="text-xs font-bold text-rose-700 mt-1">আগের রিকোয়েস্ট বাতিল হয়েছে: ${esc(billing.latestRequest?.rejectionReason || 'ভুল TrxID')}। অনুগ্রহ করে সঠিক TrxID দিয়ে আবার সাবমিট করুন।</p>` : ''}
                   </div>
                 </div>
-                <div class="flex flex-wrap items-center gap-2 shrink-0">
-                  <button type="button" id="btn-banner-pay-now" class="px-4 py-2.5 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white text-xs font-bold shadow-sm">
-                    পেমেন্ট করুন • ৳৫০০ (bKash / Nagad)
-                  </button>
-                  <button type="button" id="btn-banner-skip" class="px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-semibold">
-                    এড়িয়ে যান (Skip)
-                  </button>
-                </div>
-              </div>`
+                  <div class="flex flex-col sm:flex-row sm:items-center gap-3 shrink-0">
+                    <div class="flex items-center gap-2 bg-white/90 border border-slate-200 rounded-xl p-2 shadow-xs">
+                      <button type="button" data-qr-zoom="bkash" title="Click to enlarge bKash QR" class="flex flex-col items-center p-1 rounded-lg hover:bg-pink-50 transition">
+                        ${generatePaymentQrCode('bkash', { size: 58 })}
+                        <span class="text-[9px] font-extrabold text-pink-700 mt-1">bKash QR</span>
+                      </button>
+                      <button type="button" data-qr-zoom="nagad" title="Click to enlarge Nagad QR" class="flex flex-col items-center p-1 rounded-lg hover:bg-orange-50 transition">
+                        ${generatePaymentQrCode('nagad', { size: 58 })}
+                        <span class="text-[9px] font-extrabold text-orange-700 mt-1">Nagad QR</span>
+                      </button>
+                    </div>
+                    <div class="flex flex-col gap-2">
+                      <button type="button" id="btn-banner-pay-now" class="px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-500 hover:to-pink-500 text-white text-xs font-bold shadow-sm">
+                        ${billing.isUrgent ? 'এখনই পেমেন্ট করুন • ৳৫০০' : 'পেমেন্ট করুন • ৳৫০০ (bKash / Nagad)'}
+                      </button>
+                      <button type="button" id="btn-banner-skip" class="px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-semibold">
+                        এড়িয়ে যান (Skip)
+                      </button>
+                    </div>
+                  </div>
+                </div>`
           : '';
+
+        const lowItems = getLowStockProducts();
+        const lowSig = getLowStockSignature(lowItems);
+        const outCount = lowItems.filter((p) => Number(p.currentStock || 0) <= 0).length;
+        const visibleLowItems = state.lowStockBannerExpanded ? lowItems : lowItems.slice(0, 4);
+        const lowStockBannerHtml =
+          lowItems.length > 0 && state.lowStockDismissedSig !== lowSig
+            ? `<div id="low-stock-alert-banner" class="mb-6 rounded-2xl bg-gradient-to-r from-rose-50 via-white to-amber-50 border-2 border-rose-400 shadow-lg shadow-rose-500/10 p-4 sm:p-5 print:hidden animate-fade-in">
+                <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  <div class="flex items-start gap-3.5">
+                    <div class="w-11 h-11 rounded-2xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-sm animate-pulse">
+                      <i data-lucide="package-x" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class="px-2 py-0.5 rounded-md bg-rose-600 text-white text-[10px] font-extrabold uppercase tracking-wider">Desktop Stock Alert</span>
+                        ${outCount > 0 ? `<span class="px-2 py-0.5 rounded-md bg-rose-900 text-white text-[10px] font-extrabold">${outCount} Out of Stock</span>` : ''}
+                        <span class="px-2 py-0.5 rounded-md bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-bold">${lowItems.length} Item(s) Below Min Alert</span>
+                      </div>
+                      <h3 class="text-sm font-extrabold text-rose-950 mt-1">
+                        Restock Needed: ${lowItems.length} product${lowItems.length > 1 ? 's have' : ' has'} reached or fallen below the Min Alert threshold
+                      </h3>
+                      <p class="text-xs text-slate-600 mt-0.5">
+                        Real-time inventory monitor detected low stock. Restock now before items run out during sales.
+                      </p>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 shrink-0">
+                    ${
+                      typeof Notification !== 'undefined' && state.desktopNotifyPerm === 'default'
+                        ? `<button type="button" id="btn-enable-desktop-notify" class="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shadow-xs flex items-center gap-1.5">
+                            <i data-lucide="bell-ring" class="w-3.5 h-3.5"></i> Enable Desktop Popups
+                          </button>`
+                        : state.desktopNotifyPerm === 'granted'
+                        ? `<span class="px-2.5 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-bold flex items-center gap-1">
+                            <i data-lucide="bell-check" class="w-3.5 h-3.5"></i> Desktop Alerts On
+                          </span>`
+                        : ''
+                    }
+                    <button type="button" id="btn-view-all-low-stock" class="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-sm">
+                      View Low Stock (${lowItems.length})
+                    </button>
+                    <button type="button" id="btn-dismiss-low-stock" class="px-3 py-2 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-semibold">
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+                <div class="mt-3.5 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2.5">
+                  ${visibleLowItems
+                    .map((p) => {
+                      const cur = Number(p.currentStock || 0);
+                      const minA = Number(p.minStockAlert ?? 0);
+                      const isOut = cur <= 0;
+                      return `
+                        <div class="rounded-xl bg-white border ${isOut ? 'border-rose-300' : 'border-amber-200'} p-3 flex items-center justify-between gap-2 shadow-xs">
+                          <div class="min-w-0">
+                            <div class="font-bold text-xs text-slate-900 truncate">${esc(p.name)}</div>
+                            <div class="text-[11px] mt-0.5 flex items-center gap-1.5">
+                              <span class="font-extrabold ${isOut ? 'text-rose-600' : 'text-amber-700'}">${cur} ${esc(p.unit || 'pcs')}</span>
+                              <span class="text-slate-400">•</span>
+                              <span class="text-slate-500">Min: ${minA}</span>
+                            </div>
+                          </div>
+                          <div class="flex items-center gap-1 shrink-0">
+                            ${
+                              perms.canManageInventory
+                                ? `<button type="button" data-quick-restock="${esc(p.id)}" class="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold">Restock</button>`
+                                : ''
+                            }
+                            ${
+                              perms.canCreatePurchases
+                                ? `<button type="button" data-purchase-restock="${esc(p.id)}" title="Add to Purchase Order" class="px-2 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-700 text-[11px] font-bold">PO</button>`
+                                : ''
+                            }
+                          </div>
+                        </div>
+                      `;
+                    })
+                    .join('')}
+                </div>
+                ${
+                  lowItems.length > 4
+                    ? `<div class="mt-2.5 flex justify-end">
+                        <button type="button" id="btn-toggle-low-stock-expand" class="text-[11px] font-bold text-rose-700 hover:underline">
+                          ${state.lowStockBannerExpanded ? 'Show fewer items' : `Show all ${lowItems.length} low-stock items`}
+                        </button>
+                      </div>`
+                    : ''
+                }
+              </div>`
+            : '';
 
         return `
           <div class="min-h-screen flex flex-col bg-[#f8fbff]">
@@ -2350,7 +2767,11 @@
               <div class="flex items-center gap-3">
                 ${
                   !billing.isPaid && billing.billingActive && billing.day >= BILLING_CONFIG.noticeStartDay
-                    ? `<button type="button" id="btn-top-pay-pill" class="px-2 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold hover:bg-amber-400">Monthly Payment Due</button>`
+                    ? `<button type="button" id="btn-top-pay-pill" class="px-2.5 py-0.5 rounded font-extrabold ${
+                        billing.isUrgent && !billing.isPending
+                          ? 'bg-rose-600 text-white hover:bg-rose-500 animate-pulse'
+                          : 'bg-amber-500 text-slate-950 hover:bg-amber-400'
+                      }">${billing.isUrgent && !billing.isPending ? 'URGENT: Pay Monthly Bill' : 'Monthly Payment Due'}</button>`
                     : ''
                 }
                 <a href="https://wa.me/8801789637029" target="_blank" rel="noopener noreferrer" class="text-emerald-400 hover:text-emerald-300 font-bold">
@@ -2367,12 +2788,9 @@
                   <i data-lucide="menu" class="w-5 h-5"></i>
                 </button>
                 <div class="flex items-center gap-2.5 min-w-0">
-                  <img
-                    src="${esc(biz.logoUrl || LOGO_URL)}"
-                    alt="${esc(biz.name)}"
-                    referrerpolicy="no-referrer"
-                    class="w-9 h-9 rounded-xl object-contain bg-white border border-sky-200 p-0.5 shrink-0"
-                  />
+                  <button type="button" id="btn-nav-shop-logo" title="${perms.canManageSettings ? 'Shop Logo — click to change in Business Settings' : esc(biz.name)}" class="shrink-0 ${perms.canManageSettings ? 'cursor-pointer hover:opacity-90 transition' : 'cursor-default'}">
+                    ${renderShopLogoHtml(biz, 'w-9 h-9', 'text-xs')}
+                  </button>
                   <div class="min-w-0">
                     <div class="flex items-center gap-2">
                       <span class="font-extrabold text-sm text-slate-900 truncate">${esc(biz.name)}</span>
@@ -2389,6 +2807,14 @@
                     ? `<select id="nav-biz-switcher" class="hidden md:block text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-800 max-w-[170px]">
                         ${state.businesses.map((b) => `<option value="${esc(b.id)}" ${b.id === biz.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
                       </select>`
+                    : ''
+                }
+                ${
+                  lowItems.length > 0
+                    ? `<button type="button" id="btn-nav-low-stock" title="View products below Min Alert" class="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-300 text-rose-700 text-xs font-extrabold transition">
+                        <span class="w-2 h-2 rounded-full bg-rose-600 animate-ping"></span>
+                        <span>${lowItems.length} Low Stock</span>
+                      </button>`
                     : ''
                 }
                 <button type="button" id="btn-nav-new-sale" class="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm transition">
@@ -2410,9 +2836,15 @@
                 <div class="pt-4 mt-4 border-t border-slate-100 space-y-2">
                   ${
                     !billing.isPaid && billing.billingActive && billing.day >= BILLING_CONFIG.noticeStartDay
-                      ? `<button type="button" id="btn-sidebar-pay" class="w-full p-2.5 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-xs font-bold text-left flex items-center justify-between">
-                          <span>Pay Monthly Bill</span>
-                          <span class="px-1.5 py-0.5 rounded bg-amber-500 text-white text-[10px]">5-10</span>
+                      ? `<button type="button" id="btn-sidebar-pay" class="w-full p-2.5 rounded-xl ${
+                          billing.isUrgent && !billing.isPending
+                            ? 'bg-rose-50 hover:bg-rose-100 border-2 border-rose-400 text-rose-900'
+                            : 'bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900'
+                        } text-xs font-bold text-left flex items-center justify-between">
+                          <span>${billing.isUrgent && !billing.isPending ? 'URGENT: Pay Bill' : 'Pay Monthly Bill'}</span>
+                          <span class="px-1.5 py-0.5 rounded ${
+                            billing.isUrgent && !billing.isPending ? 'bg-rose-600 text-white animate-pulse' : 'bg-amber-500 text-white'
+                          } text-[10px]">${billing.isUrgent && !billing.isPending ? 'URGENT' : '5-10'}</span>
                         </button>`
                       : ''
                   }
@@ -2447,6 +2879,7 @@
               <!-- Main Content -->
               <main class="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
                 ${paymentBannerHtml}
+                ${lowStockBannerHtml}
                 ${mainHtml}
               </main>
             </div>
@@ -2484,12 +2917,15 @@
           <div class="space-y-6 animate-fade-in">
             <!-- Hero Banner -->
             <div class="dms-card-blue rounded-3xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <div class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-bold mb-2">
-                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Live Cloud Sync Active
+              <div class="flex items-center gap-4">
+                ${renderShopLogoHtml(biz, 'w-14 h-14', 'text-base')}
+                <div>
+                  <div class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-bold mb-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Live Cloud Sync Active
+                  </div>
+                  <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">${esc(biz.name)}</h1>
+                  <p class="text-xs sm:text-sm text-slate-600 mt-1">Financial & inventory overview for Financial Year ${esc(biz.financialYear || '2026-2027')}</p>
                 </div>
-                <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">${esc(biz.name)}</h1>
-                <p class="text-xs sm:text-sm text-slate-600 mt-1">Financial & inventory overview for Financial Year ${esc(biz.financialYear || '2026-2027')}</p>
               </div>
               <div class="flex flex-wrap gap-2.5">
                 <button type="button" id="btn-dash-sale-modal" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-md shadow-emerald-600/20 flex items-center gap-2">
@@ -3694,10 +4130,16 @@
               </div>
               <div><label class="block font-bold text-slate-700 mb-1">Business Address</label><input name="address" value="${esc(b.address)}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm" /></div>
               <div>
-                <label class="block font-bold text-slate-700 mb-1">Business Logo (Upload or URL)</label>
-                <div class="flex flex-wrap items-center gap-3">
-                  <input type="file" id="settings-logo-file" accept="image/*" class="text-xs file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-sky-50 file:text-sky-700 file:font-bold" />
-                  <input name="logoUrl" id="settings-logo-url" value="${esc(b.logoUrl || '')}" placeholder="https://..." class="flex-1 min-w-[200px] px-3 py-2 rounded-xl border border-slate-300" />
+                <label class="block font-bold text-slate-700 mb-1.5">Shop Logo (Upload Image or Paste URL)</label>
+                <div class="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                  <div id="settings-logo-preview">${renderShopLogoHtml(b, 'w-14 h-14', 'text-base')}</div>
+                  <div class="flex-1 min-w-[220px] space-y-2">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <input type="file" id="settings-logo-file" accept="image/*" class="text-xs file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-sky-600 file:text-white file:font-bold hover:file:bg-sky-700 file:cursor-pointer" />
+                      ${b.logoUrl ? `<button type="button" id="btn-remove-settings-logo" class="px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-[11px] font-bold">Remove Logo</button>` : ''}
+                    </div>
+                    <input name="logoUrl" id="settings-logo-url" value="${esc(b.logoUrl || '')}" placeholder="https://... or upload an image file above" class="w-full px-3 py-2 rounded-xl bg-white border border-slate-300 text-xs" />
+                  </div>
                 </div>
               </div>
               <div class="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100">
@@ -4049,7 +4491,7 @@
             <div id="invoice-printable" class="space-y-4 text-xs text-slate-900">
               <div class="flex items-start justify-between border-b border-slate-200 pb-4">
                 <div class="flex items-center gap-3">
-                  <img src="${esc(biz.logoUrl || LOGO_URL)}" referrerpolicy="no-referrer" class="w-12 h-12 rounded-xl object-contain border border-slate-200 p-1" />
+                  ${renderShopLogoHtml(biz, 'w-12 h-12', 'text-sm')}
                   <div>
                     <div class="text-lg font-extrabold">${esc(biz.name)}</div>
                     <div class="text-slate-500">${esc(biz.address || '')} • ${esc(biz.phone || '')}</div>
@@ -4147,7 +4589,15 @@
                   <span class="px-2 py-0.5 rounded-md bg-pink-600 text-white font-extrabold text-[10px]">bKash (Send Money)</span>
                   <span class="text-[10px] font-bold ${sel === 'bkash' ? 'text-pink-700' : 'text-slate-400'}">${sel === 'bkash' ? '✓ Selected' : 'Select'}</span>
                 </div>
-                <div class="text-lg font-extrabold text-slate-900 tracking-wide mt-2 font-mono">${BILLING_CONFIG.bkash}</div>
+                <div class="mt-3 flex items-center justify-between gap-3">
+                  <div>
+                    <div class="text-base font-extrabold text-slate-900 tracking-wide font-mono">${BILLING_CONFIG.bkash}</div>
+                    <div class="text-[10px] text-slate-500 mt-0.5">Scan QR or copy number</div>
+                  </div>
+                  <button type="button" data-qr-zoom="bkash" title="Click to enlarge bKash QR" class="shrink-0 p-1 rounded-xl bg-white border border-pink-200 hover:border-pink-400 shadow-xs">
+                    ${generatePaymentQrCode('bkash', { size: 74 })}
+                  </button>
+                </div>
                 <button type="button" data-copy-num="${BILLING_CONFIG.bkash}" data-copy-label="bKash" class="mt-2.5 w-full py-1.5 rounded-lg bg-white border border-pink-300 text-pink-700 font-bold hover:bg-pink-100">
                   Copy bKash Number
                 </button>
@@ -4159,7 +4609,15 @@
                   <span class="px-2 py-0.5 rounded-md bg-orange-600 text-white font-extrabold text-[10px]">Nagad (Send Money)</span>
                   <span class="text-[10px] font-bold ${sel === 'nagad' ? 'text-orange-700' : 'text-slate-400'}">${sel === 'nagad' ? '✓ Selected' : 'Select'}</span>
                 </div>
-                <div class="text-lg font-extrabold text-slate-900 tracking-wide mt-2 font-mono">${BILLING_CONFIG.nagad}</div>
+                <div class="mt-3 flex items-center justify-between gap-3">
+                  <div>
+                    <div class="text-base font-extrabold text-slate-900 tracking-wide font-mono">${BILLING_CONFIG.nagad}</div>
+                    <div class="text-[10px] text-slate-500 mt-0.5">Scan QR or copy number</div>
+                  </div>
+                  <button type="button" data-qr-zoom="nagad" title="Click to enlarge Nagad QR" class="shrink-0 p-1 rounded-xl bg-white border border-orange-200 hover:border-orange-400 shadow-xs">
+                    ${generatePaymentQrCode('nagad', { size: 74 })}
+                  </button>
+                </div>
                 <button type="button" data-copy-num="${BILLING_CONFIG.nagad}" data-copy-label="Nagad" class="mt-2.5 w-full py-1.5 rounded-lg bg-white border border-orange-300 text-orange-700 font-bold hover:bg-orange-100">
                   Copy Nagad Number
                 </button>
@@ -4190,7 +4648,7 @@
       function wireSubscriptionPaymentContainer(container, onSuccess = null) {
         container.querySelectorAll('[data-pay-method]').forEach((card) => {
           card.onclick = (e) => {
-            if (e.target.closest('[data-copy-num]')) return;
+            if (e.target.closest('[data-copy-num]') || e.target.closest('[data-qr-zoom]')) return;
             state.billingSelectedMethod = card.dataset.payMethod;
             const inp = container.querySelector('#sub-method-input');
             if (inp) inp.value = state.billingSelectedMethod;
@@ -4205,6 +4663,12 @@
                   : 'border-slate-200 bg-white'
               }`;
             });
+          };
+        });
+        container.querySelectorAll('[data-qr-zoom]').forEach((btn) => {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            openQrZoomModal(btn.dataset.qrZoom);
           };
         });
         container.querySelectorAll('[data-copy-num]').forEach((btn) => {
@@ -4729,25 +5193,41 @@
                 </div>
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div class="p-3 rounded-xl bg-pink-50/70 border border-pink-200 flex items-center justify-between gap-2">
-                    <div>
-                      <div class="text-[10px] font-extrabold text-pink-700 uppercase">bKash (Send Money)</div>
-                      <div class="text-sm font-extrabold font-mono text-slate-900">${BILLING_CONFIG.bkash}</div>
+                  <div class="p-3 rounded-xl bg-pink-50/70 border border-pink-200 flex items-center justify-between gap-2.5">
+                    <div class="space-y-1.5">
+                      <div>
+                        <div class="text-[10px] font-extrabold text-pink-700 uppercase">bKash (Send Money)</div>
+                        <div class="text-sm font-extrabold font-mono text-slate-900">${BILLING_CONFIG.bkash}</div>
+                      </div>
+                      <div class="flex flex-wrap gap-1.5">
+                        <button type="button" data-sup-copy="${BILLING_CONFIG.bkash}" data-sup-lbl="bKash" class="px-2.5 py-1 rounded-lg bg-white border border-pink-300 text-pink-700 font-bold text-[11px] hover:bg-pink-100">Copy</button>
+                        <button type="button" data-qr-zoom="bkash" class="px-2.5 py-1 rounded-lg bg-pink-600 text-white font-bold text-[11px] hover:bg-pink-700">Zoom QR</button>
+                      </div>
                     </div>
-                    <button type="button" data-sup-copy="${BILLING_CONFIG.bkash}" data-sup-lbl="bKash" class="px-2.5 py-1.5 rounded-lg bg-white border border-pink-300 text-pink-700 font-bold text-[11px] hover:bg-pink-100">Copy</button>
+                    <button type="button" data-qr-zoom="bkash" title="Click to enlarge bKash QR" class="shrink-0 p-1 rounded-xl bg-white border border-pink-200 hover:border-pink-400">
+                      ${generatePaymentQrCode('bkash', { size: 78 })}
+                    </button>
                   </div>
-                  <div class="p-3 rounded-xl bg-orange-50/70 border border-orange-200 flex items-center justify-between gap-2">
-                    <div>
-                      <div class="text-[10px] font-extrabold text-orange-700 uppercase">Nagad (Send Money)</div>
-                      <div class="text-sm font-extrabold font-mono text-slate-900">${BILLING_CONFIG.nagad}</div>
+                  <div class="p-3 rounded-xl bg-orange-50/70 border border-orange-200 flex items-center justify-between gap-2.5">
+                    <div class="space-y-1.5">
+                      <div>
+                        <div class="text-[10px] font-extrabold text-orange-700 uppercase">Nagad (Send Money)</div>
+                        <div class="text-sm font-extrabold font-mono text-slate-900">${BILLING_CONFIG.nagad}</div>
+                      </div>
+                      <div class="flex flex-wrap gap-1.5">
+                        <button type="button" data-sup-copy="${BILLING_CONFIG.nagad}" data-sup-lbl="Nagad" class="px-2.5 py-1 rounded-lg bg-white border border-orange-300 text-orange-700 font-bold text-[11px] hover:bg-orange-100">Copy</button>
+                        <button type="button" data-qr-zoom="nagad" class="px-2.5 py-1 rounded-lg bg-orange-600 text-white font-bold text-[11px] hover:bg-orange-700">Zoom QR</button>
+                      </div>
                     </div>
-                    <button type="button" data-sup-copy="${BILLING_CONFIG.nagad}" data-sup-lbl="Nagad" class="px-2.5 py-1.5 rounded-lg bg-white border border-orange-300 text-orange-700 font-bold text-[11px] hover:bg-orange-100">Copy</button>
+                    <button type="button" data-qr-zoom="nagad" title="Click to enlarge Nagad QR" class="shrink-0 p-1 rounded-xl bg-white border border-orange-200 hover:border-orange-400">
+                      ${generatePaymentQrCode('nagad', { size: 78 })}
+                    </button>
                   </div>
                 </div>
 
                 <p class="text-[11px] leading-relaxed text-slate-600">
                   <strong class="text-slate-900">3. Submit TrxID & Wait for Admin Approval:</strong>
-                  Click the dashboard payment notice (or <em>Pay Monthly Bill</em>), select bKash or Nagad, enter your 11-digit sender mobile number and the exact <strong>Transaction ID (TrxID)</strong>, and submit. Once the Owner verifies and clicks <strong>Approve</strong>, your account unlocks automatically in real time.
+                  Scan the QR code above or copy the number to Send Money ৳500, then click the dashboard payment notice (or <em>Pay Monthly Bill</em>), enter your 11-digit sender mobile number and the exact <strong>Transaction ID (TrxID)</strong>, and submit. Once the Owner verifies and clicks <strong>Approve</strong>, your account unlocks automatically in real time.
                 </p>
 
                 <!-- Verification Failure Troubleshooting -->
@@ -4785,6 +5265,9 @@
             navigator.clipboard?.writeText(num);
             showToast(`${lbl} number ${num} copied!`, 'info');
           };
+        });
+        modal.querySelectorAll('[data-qr-zoom]').forEach((btn) => {
+          btn.onclick = () => openQrZoomModal(btn.dataset.qrZoom);
         });
         const payBtn = modal.querySelector('#btn-sup-open-pay');
         if (payBtn) {
@@ -4854,6 +5337,7 @@
           root.innerHTML = renderAppShell(viewHtml);
           bindAppEvents();
           if (state.currentView === 'dashboard') renderDashboardCharts();
+          maybeTriggerUrgentBillingAlert();
         }
 
         if (window.lucide) window.lucide.createIcons();
@@ -4919,24 +5403,57 @@
         if (cancelBtn && modalWrap) cancelBtn.onclick = () => modalWrap.remove();
         const prevBtn = document.getElementById('btn-wizard-prev');
         if (prevBtn) prevBtn.onclick = () => { state.wizardStep--; render(); };
+        let pendingLogoUpload = null;
+        const form = document.getElementById('wizard-form');
+        const syncWizardFields = () => {
+          if (!form) return;
+          const fd = new FormData(form);
+          for (const [k, v] of fd.entries()) state.wizardForm[k] = v.toString();
+        };
+        if (form) {
+          form.querySelectorAll('input, select, textarea').forEach((el) => {
+            if (el.type !== 'file') el.addEventListener('input', syncWizardFields);
+          });
+        }
+        const wizLogoUrlInp = document.getElementById('wizard-logo-url');
+        if (wizLogoUrlInp) {
+          wizLogoUrlInp.oninput = () => {
+            state.wizardForm.logoUrl = wizLogoUrlInp.value.trim();
+            const prev = document.getElementById('wizard-logo-preview');
+            if (prev) prev.innerHTML = renderShopLogoHtml({ name: state.wizardForm.name || 'Shop', logoUrl: state.wizardForm.logoUrl }, 'w-11 h-11', 'text-xs');
+          };
+        }
         const fileInp = document.getElementById('wizard-logo-file');
         if (fileInp) {
           fileInp.onchange = async (e) => {
             const f = e.target.files?.[0];
-            if (f) {
-              showToast('Uploading logo...', 'info');
-              state.wizardForm.logoUrl = await uploadFileToStorage(f, `logos/${state.user.uid}/${Date.now()}_${f.name}`);
-              showToast('Logo uploaded!');
-              render();
+            if (!f) return;
+            syncWizardFields();
+            showToast('Uploading shop logo...', 'info');
+            pendingLogoUpload = uploadFileToStorage(f, `logos/${state.user.uid}/${Date.now()}_${f.name}`);
+            try {
+              const url = await pendingLogoUpload;
+              state.wizardForm.logoUrl = url;
+              if (wizLogoUrlInp) wizLogoUrlInp.value = url;
+              const prev = document.getElementById('wizard-logo-preview');
+              if (prev) prev.innerHTML = renderShopLogoHtml({ name: state.wizardForm.name || 'Shop', logoUrl: url }, 'w-11 h-11', 'text-xs');
+              showToast('Shop logo ready!');
+            } catch (err) {
+              showToast('Logo upload failed: ' + (err?.message || 'Try a smaller image'), 'error');
+            } finally {
+              pendingLogoUpload = null;
             }
           };
         }
-        const form = document.getElementById('wizard-form');
         if (form) {
           form.onsubmit = async (e) => {
             e.preventDefault();
-            const fd = new FormData(form);
-            for (const [k, v] of fd.entries()) state.wizardForm[k] = v.toString();
+            if (pendingLogoUpload) {
+              try {
+                state.wizardForm.logoUrl = await pendingLogoUpload;
+              } catch {}
+            }
+            syncWizardFields();
             if (state.wizardStep < 3) {
               state.wizardStep++;
               render();
@@ -4984,13 +5501,112 @@
         if (paySideBtn) paySideBtn.onclick = openSubscriptionPaymentModal;
         const paySetBtn = document.getElementById('btn-settings-pay-now');
         if (paySetBtn) paySetBtn.onclick = openSubscriptionPaymentModal;
+        document.querySelectorAll('#billing-notice-banner [data-qr-zoom]').forEach((btn) => {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            openQrZoomModal(btn.dataset.qrZoom);
+          };
+        });
         const skipBanner = document.getElementById('btn-banner-skip');
         if (skipBanner) {
           skipBanner.onclick = () => {
-            const mk = getBillingStatus().monthKey;
-            state.billingNoticeDismissedMonth = mk;
-            sessionStorage.setItem('dms_billing_dismissed_month', mk);
+            const dk = getBillingStatus().dismissKey;
+            state.billingNoticeDismissedMonth = dk;
+            sessionStorage.setItem('dms_billing_dismissed_month', dk);
             showToast('নোটিশটি আপাতত এড়িয়ে যাওয়া হয়েছে (১০ তারিখ পর্যন্ত সুযোগ থাকবে)।', 'info');
+            render();
+          };
+        }
+
+        // Low-Stock Desktop Alert handlers
+        const navLowBtn = document.getElementById('btn-nav-low-stock');
+        if (navLowBtn) {
+          navLowBtn.onclick = () => {
+            state.currentView = 'products';
+            state.productsStockFilter = 'LOW';
+            render();
+          };
+        }
+        const enableDeskBtn = document.getElementById('btn-enable-desktop-notify');
+        if (enableDeskBtn) enableDeskBtn.onclick = requestDesktopNotificationPermission;
+        const viewAllLowBtn = document.getElementById('btn-view-all-low-stock');
+        if (viewAllLowBtn) {
+          viewAllLowBtn.onclick = () => {
+            state.currentView = 'products';
+            state.productsStockFilter = 'LOW';
+            render();
+          };
+        }
+        const dismissLowBtn = document.getElementById('btn-dismiss-low-stock');
+        if (dismissLowBtn) {
+          dismissLowBtn.onclick = () => {
+            state.lowStockDismissedSig = getLowStockSignature(getLowStockProducts());
+            render();
+          };
+        }
+        const expandLowBtn = document.getElementById('btn-toggle-low-stock-expand');
+        if (expandLowBtn) {
+          expandLowBtn.onclick = () => {
+            state.lowStockBannerExpanded = !state.lowStockBannerExpanded;
+            render();
+          };
+        }
+        document.querySelectorAll('[data-quick-restock]').forEach((b) => {
+          b.onclick = () => {
+            const p = state.products.find((x) => x.id === b.dataset.quickRestock);
+            if (!p) return;
+            const suggested = Math.max(1, Number(p.minStockAlert || 5) * 2 - Number(p.currentStock || 0));
+            const m = openModal(
+              `Quick Restock — ${p.name}`,
+              `<form id="quick-restock-form" class="space-y-3 text-xs">
+                <div class="p-3 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-between">
+                  <span>Current Stock: <strong class="text-rose-700">${Number(p.currentStock || 0)} ${esc(p.unit || 'pcs')}</strong></span>
+                  <span>Min Alert: <strong>${Number(p.minStockAlert ?? 0)} ${esc(p.unit || 'pcs')}</strong></span>
+                </div>
+                <div>
+                  <label class="block font-bold mb-1">Quantity to Add (+)</label>
+                  <input name="addQty" type="number" min="1" required value="${suggested}" class="w-full px-3 py-2 rounded-xl border border-slate-300" />
+                </div>
+                <div>
+                  <label class="block font-bold mb-1">Note / Reason</label>
+                  <input name="reason" required value="Low stock restock" class="w-full px-3 py-2 rounded-xl border border-slate-300" />
+                </div>
+                <button type="submit" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold">Add Stock Now</button>
+              </form>`
+            );
+            m.querySelector('#quick-restock-form').onsubmit = async (e) => {
+              e.preventDefault();
+              const fd = new FormData(e.target);
+              await adjustProductStock(p.id, Math.abs(Number(fd.get('addQty') || 0)), fd.get('reason').toString());
+              m.remove();
+            };
+          };
+        });
+        document.querySelectorAll('[data-purchase-restock]').forEach((b) => {
+          b.onclick = () => {
+            const p = state.products.find((x) => x.id === b.dataset.purchaseRestock);
+            if (!p) return;
+            const suggested = Math.max(1, Number(p.minStockAlert || 5) * 2 - Number(p.currentStock || 0));
+            const existing = state.purchasesCart.find((i) => i.productId === p.id);
+            if (!existing) {
+              state.purchasesCart.push({
+                productId: p.id,
+                productName: p.name,
+                quantity: suggested,
+                unitCost: Number(p.purchasePrice || 0),
+              });
+            }
+            state.currentView = 'purchases';
+            state.purchasesTab = 'create';
+            showToast(`${p.name} added to Purchase cart (${suggested} ${p.unit || 'pcs'}).`, 'info');
+            render();
+          };
+        });
+
+        const navShopLogo = document.getElementById('btn-nav-shop-logo');
+        if (navShopLogo && getPermissions().canManageSettings) {
+          navShopLogo.onclick = () => {
+            state.currentView = 'settings';
             render();
           };
         }
@@ -5008,6 +5624,7 @@
         const openNewBiz = () => {
           state.wizardStep = 1;
           state.wizardForm.name = '';
+          state.wizardForm.logoUrl = '';
           const m = openModal('Create Another Business', renderWizardView(false).replace('min-h-screen bg-[#f8fbff] flex items-center justify-center p-4 sm:p-8', ''), 'max-w-2xl');
           bindWizardEvents(false, m);
         };
@@ -5453,16 +6070,43 @@
         if (aMod) aMod.onchange = () => { state.auditModule = aMod.value; render(); };
 
         // Settings
+        const setLogoUrlInp = document.getElementById('settings-logo-url');
+        const setLogoPreview = document.getElementById('settings-logo-preview');
+        if (setLogoUrlInp && setLogoPreview) {
+          setLogoUrlInp.oninput = () => {
+            setLogoPreview.innerHTML = renderShopLogoHtml(
+              { ...state.currentBusiness, logoUrl: setLogoUrlInp.value.trim() },
+              'w-14 h-14',
+              'text-base'
+            );
+          };
+        }
+        const rmLogoBtn = document.getElementById('btn-remove-settings-logo');
+        if (rmLogoBtn) {
+          rmLogoBtn.onclick = async () => {
+            try {
+              if (setLogoUrlInp) setLogoUrlInp.value = '';
+              await updateBusinessProfile({ logoUrl: '' });
+            } catch (err) {
+              showToast('Could not remove logo: ' + (err?.message || 'Error'), 'error');
+            }
+          };
+        }
         const setLogoFile = document.getElementById('settings-logo-file');
         if (setLogoFile) {
           setLogoFile.onchange = async (e) => {
             const f = e.target.files?.[0];
-            if (f) {
-              showToast('Uploading logo...', 'info');
+            if (!f) return;
+            try {
+              showToast('Uploading & saving shop logo...', 'info');
               const url = await uploadFileToStorage(f, `logos/${state.currentBusiness.id}/${Date.now()}_${f.name}`);
-              const urlInp = document.getElementById('settings-logo-url');
-              if (urlInp) urlInp.value = url;
-              showToast('Logo uploaded! Click Save Changes.');
+              if (setLogoUrlInp) setLogoUrlInp.value = url;
+              if (setLogoPreview) {
+                setLogoPreview.innerHTML = renderShopLogoHtml({ ...state.currentBusiness, logoUrl: url }, 'w-14 h-14', 'text-base');
+              }
+              await updateBusinessProfile({ logoUrl: url });
+            } catch (err) {
+              showToast('Failed to upload/save shop logo: ' + (err?.message || 'Try a smaller image'), 'error');
             }
           };
         }
@@ -5471,16 +6115,20 @@
           setForm.onsubmit = async (e) => {
             e.preventDefault();
             const fd = new FormData(setForm);
-            await updateBusinessProfile({
-              name: fd.get('name').toString().trim(),
-              ownerName: fd.get('ownerName').toString().trim(),
-              phone: fd.get('phone').toString().trim(),
-              whatsapp: fd.get('whatsapp').toString().trim(),
-              invoicePrefix: fd.get('invoicePrefix').toString().trim(),
-              currency: fd.get('currency').toString(),
-              address: fd.get('address').toString().trim(),
-              logoUrl: fd.get('logoUrl').toString().trim(),
-            });
+            try {
+              await updateBusinessProfile({
+                name: fd.get('name').toString().trim(),
+                ownerName: fd.get('ownerName').toString().trim(),
+                phone: fd.get('phone').toString().trim(),
+                whatsapp: fd.get('whatsapp').toString().trim(),
+                invoicePrefix: fd.get('invoicePrefix').toString().trim(),
+                currency: fd.get('currency').toString(),
+                address: fd.get('address').toString().trim(),
+                logoUrl: fd.get('logoUrl').toString().trim(),
+              });
+            } catch (err) {
+              showToast('Failed to save settings: ' + (err?.message || 'Error'), 'error');
+            }
           };
         }
         const bkBtn = document.getElementById('btn-download-backup');
