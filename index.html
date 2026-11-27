@@ -174,6 +174,12 @@
 
       const LOGO_URL = 'https://i.imgur.com/XjO7IJK.jpg';
       const HERO_BG_URL = 'https://i.imgur.com/15btbvY.jpg';
+      const BILLING_CONFIG = {
+        bkash: '01789637029',
+        nagad: '01604703820',
+        noticeStartDay: 5,
+        noticeEndDay: 10,
+      };
 
       const app = initializeApp(firebaseConfig);
       const auth = getAuth(app);
@@ -366,6 +372,8 @@
         pendingDisplayName: '',
         authShowGuide: false,
         authLoadingSubmit: false,
+        billingNoticeDismissedMonth: sessionStorage.getItem('dms_billing_dismissed_month') || '',
+        billingSelectedMethod: 'bkash',
 
         // Wizard state
         wizardStep: 1,
@@ -527,6 +535,117 @@
           handleFirestoreError(err, 'write', path);
           return null;
         }
+      }
+
+      function getBillingStatus() {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const monthKey = `${year}-${month}`;
+        const day = now.getDate();
+        const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+        const paidRecord =
+          state.userProfile?.paidMonths?.[monthKey] ||
+          state.currentBusiness?.paidMonths?.[monthKey] ||
+          null;
+        const isPaid = Boolean(paidRecord);
+        const isNoticeWindow = !isPaid && day >= BILLING_CONFIG.noticeStartDay && day <= BILLING_CONFIG.noticeEndDay;
+        const isLocked = !isPaid && day > BILLING_CONFIG.noticeEndDay;
+        const isDismissed = state.billingNoticeDismissedMonth === monthKey;
+        const daysLeft = Math.max(0, BILLING_CONFIG.noticeEndDay - day);
+        return {
+          monthKey,
+          monthLabel,
+          day,
+          daysLeft,
+          isPaid,
+          paidRecord,
+          isNoticeWindow,
+          isLocked,
+          isDismissed,
+        };
+      }
+
+      function validateSubscriptionInputs(method, senderPhone, trxId) {
+        const phone = String(senderPhone || '').replace(/[\s-]/g, '').trim();
+        const trx = String(trxId || '').replace(/\s+/g, '').trim().toUpperCase();
+        if (!/^01[3-9]\d{8}$/.test(phone)) {
+          throw new Error('সঠিক ১১ ডিজিটের মোবাইল নাম্বার দিন (যেমন: 017XXXXXXXX)।');
+        }
+        if (!/^[A-Z0-9]{6,20}$/.test(trx) || !/[0-9]/.test(trx)) {
+          throw new Error('সঠিক Transaction ID (TrxID) দিন (কমপক্ষে ৬ অক্ষরের সঠিক ট্রানজেকশন কোড)।');
+        }
+        if (/^([A-Z0-9])\1+$/.test(trx) || ['123456', '1234567', '12345678', '123456789', '0123456', '654321'].includes(trx)) {
+          throw new Error('ভুল বা অনুমাননির্ভর Transaction ID গ্রহণযোগ্য নয়। অনুগ্রহ করে সঠিক TrxID দিন।');
+        }
+        if (trx === BILLING_CONFIG.bkash || trx === BILLING_CONFIG.nagad || phone === BILLING_CONFIG.bkash || phone === BILLING_CONFIG.nagad) {
+          throw new Error('আমাদের রিসিভার নাম্বার নয়, আপনার নিজের সেন্ডার নাম্বার ও আসল Transaction ID দিন।');
+        }
+        const used = Array.isArray(state.userProfile?.subscriptionPayments)
+          ? state.userProfile.subscriptionPayments
+          : [];
+        if (used.some((p) => String(p.trxId || '').toUpperCase() === trx)) {
+          throw new Error('এই Transaction ID ইতিমধ্যে ব্যবহার করা হয়েছে। নতুন পেমেন্টের TrxID দিন।');
+        }
+        return { method, senderPhone: phone, trxId: trx };
+      }
+
+      async function submitSubscriptionPayment({ method, senderPhone, trxId }) {
+        if (!state.user) throw new Error('User login required');
+        const clean = validateSubscriptionInputs(method, senderPhone, trxId);
+        const status = getBillingStatus();
+        const now = new Date().toISOString();
+        const paymentRecord = sanitizeForFirestore({
+          id: 'sub_' + Date.now(),
+          month: status.monthKey,
+          monthLabel: status.monthLabel,
+          method: clean.method,
+          receiverNumber: clean.method === 'nagad' ? BILLING_CONFIG.nagad : BILLING_CONFIG.bkash,
+          senderPhone: clean.senderPhone,
+          trxId: clean.trxId,
+          status: 'SUBMITTED',
+          paidAt: now,
+        });
+
+        const userRef = doc(db, 'users', state.user.uid);
+        const snap = await getDoc(userRef);
+        const existing = snap.exists() ? snap.data() : {};
+        const nextPaidMonths = { ...(existing.paidMonths || {}), [status.monthKey]: paymentRecord };
+        const nextHistory = [...(Array.isArray(existing.subscriptionPayments) ? existing.subscriptionPayments : []), paymentRecord];
+
+        await setDoc(
+          userRef,
+          sanitizeForFirestore({
+            paidMonths: nextPaidMonths,
+            subscriptionPayments: nextHistory,
+            updatedAt: now,
+          }),
+          { merge: true }
+        );
+
+        state.userProfile = {
+          ...(state.userProfile || {}),
+          paidMonths: nextPaidMonths,
+          subscriptionPayments: nextHistory,
+        };
+
+        if (state.currentBusiness && state.currentBusiness.ownerId === state.user.uid) {
+          try {
+            const bizPaidMonths = { ...(state.currentBusiness.paidMonths || {}), [status.monthKey]: paymentRecord };
+            await updateDoc(
+              doc(db, 'businesses', state.currentBusiness.id),
+              sanitizeForFirestore({ paidMonths: bizPaidMonths, lastPaidMonth: status.monthKey, updatedAt: now })
+            );
+            state.currentBusiness = { ...state.currentBusiness, paidMonths: bizPaidMonths, lastPaidMonth: status.monthKey };
+            await logAuditAction('BILLING', 'SUBSCRIPTION_PAYMENT', `Paid ${status.monthLabel} via ${clean.method.toUpperCase()} (TrxID: ${clean.trxId})`, paymentRecord.id);
+          } catch {}
+        }
+
+        state.billingNoticeDismissedMonth = '';
+        sessionStorage.removeItem('dms_billing_dismissed_month');
+        showToast('পেমেন্ট সফলভাবে ভেরিফাই ও সাবমিট হয়েছে! আপনি এখন সাইট ব্যবহার করতে পারবেন।');
+        render();
+        return paymentRecord;
       }
 
       function cleanupBusinessSubs() {
@@ -1822,6 +1941,33 @@
           })
           .join('');
 
+        const billing = getBillingStatus();
+        const paymentBannerHtml = billing.isNoticeWindow && !billing.isDismissed
+          ? `<div id="billing-notice-banner" class="mb-6 rounded-2xl bg-gradient-to-r from-amber-50 via-white to-sky-50 border border-amber-300 shadow-md p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden animate-fade-in">
+              <div class="flex items-start gap-3.5 cursor-pointer flex-1" id="btn-banner-open-pay">
+                <div class="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 text-amber-700 flex items-center justify-center shrink-0">
+                  <i data-lucide="bell-ring" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="px-2 py-0.5 rounded-md bg-amber-500 text-white text-[10px] font-extrabold uppercase">Monthly Payment Notice (৫–১০ তারিখ)</span>
+                    <span class="text-[11px] font-bold text-rose-600">${billing.daysLeft === 0 ? 'আজই শেষ দিন (১০ তারিখ)!' : `বাকি আছে মাত্র ${billing.daysLeft} দিন`}</span>
+                  </div>
+                  <h3 class="text-sm font-extrabold text-slate-900 mt-1">${esc(billing.monthLabel)} মাসের পেমেন্ট সম্পন্ন করতে এখানে ক্লিক করুন</h3>
+                  <p class="text-xs text-slate-600 mt-0.5">প্রতি মাসের ৫ থেকে ১০ তারিখের মধ্যে bKash বা Nagad-এ Send Money করে Transaction Number সাবমিট করুন। ১০ তারিখের মধ্যে পেমেন্ট না করলে সাইট বন্ধ হয়ে যাবে।</p>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-2 shrink-0">
+                <button type="button" id="btn-banner-pay-now" class="px-4 py-2.5 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white text-xs font-bold shadow-sm">
+                  পেমেন্ট করুন (bKash / Nagad)
+                </button>
+                <button type="button" id="btn-banner-skip" class="px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-semibold">
+                  এড়িয়ে যান (Skip)
+                </button>
+              </div>
+            </div>`
+          : '';
+
         return `
           <div class="min-h-screen flex flex-col bg-[#f8fbff]">
             <!-- Official Support Banner -->
@@ -1833,6 +1979,11 @@
                 <span class="text-slate-200">Owner: DIL Mohammad Sohel</span>
               </div>
               <div class="flex items-center gap-3">
+                ${
+                  !billing.isPaid && billing.day >= BILLING_CONFIG.noticeStartDay
+                    ? `<button type="button" id="btn-top-pay-pill" class="px-2 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold hover:bg-amber-400">Monthly Payment Due</button>`
+                    : ''
+                }
                 <a href="https://wa.me/8801789637029" target="_blank" rel="noopener noreferrer" class="text-emerald-400 hover:text-emerald-300 font-bold">
                   WhatsApp: 01789637029
                 </a>
@@ -1888,6 +2039,14 @@
               <aside class="hidden lg:flex flex-col w-64 shrink-0 bg-white border-r border-slate-200 p-4 justify-between print:hidden">
                 <nav class="space-y-1">${navLinksHtml}</nav>
                 <div class="pt-4 mt-4 border-t border-slate-100 space-y-2">
+                  ${
+                    !billing.isPaid && billing.day >= BILLING_CONFIG.noticeStartDay
+                      ? `<button type="button" id="btn-sidebar-pay" class="w-full p-2.5 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-xs font-bold text-left flex items-center justify-between">
+                          <span>Pay Monthly Bill</span>
+                          <span class="px-1.5 py-0.5 rounded bg-amber-500 text-white text-[10px]">5-10</span>
+                        </button>`
+                      : ''
+                  }
                   <div class="p-3 rounded-2xl bg-sky-50 border border-sky-100 text-xs">
                     <div class="font-bold text-slate-900 truncate">${esc(state.user?.displayName || 'Business User')}</div>
                     <div class="text-[11px] text-slate-500 truncate">${esc(state.user?.email || '')}</div>
@@ -1918,6 +2077,7 @@
 
               <!-- Main Content -->
               <main class="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+                ${paymentBannerHtml}
                 ${mainHtml}
               </main>
             </div>
@@ -3137,11 +3297,13 @@
 
       function renderSettingsView() {
         const b = state.currentBusiness;
+        const billing = getBillingStatus();
+        const history = Array.isArray(state.userProfile?.subscriptionPayments) ? [...state.userProfile.subscriptionPayments].reverse() : [];
         return `
           <div class="space-y-6 animate-fade-in max-w-4xl">
             <div>
               <h1 class="text-2xl font-extrabold text-slate-900">Business Settings & Backup</h1>
-              <p class="text-xs text-slate-600">Customize invoice identity, logo, currency, and download full JSON cloud backups</p>
+              <p class="text-xs text-slate-600">Customize invoice identity, logo, currency, subscription status, and JSON backups</p>
             </div>
             <form id="settings-form" class="dms-card rounded-2xl p-6 space-y-4 text-xs">
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3170,6 +3332,35 @@
                 <button type="submit" class="px-6 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold shadow-md">Save Changes</button>
               </div>
             </form>
+
+            <!-- Subscription Payment Status & History -->
+            <div class="dms-card rounded-2xl p-6 space-y-4 text-xs">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 class="text-sm font-extrabold text-slate-900">Monthly Subscription & Payment History</h2>
+                  <p class="text-slate-500">Current Month (${esc(billing.monthLabel)}): <strong class="${billing.isPaid ? 'text-emerald-700' : 'text-amber-700'}">${billing.isPaid ? 'PAID & ACTIVE' : 'PAYMENT PENDING'}</strong></p>
+                </div>
+                ${
+                  !billing.isPaid
+                    ? `<button type="button" id="btn-settings-pay-now" class="px-4 py-2 rounded-xl bg-pink-600 hover:bg-pink-700 text-white font-bold">Pay Monthly Fee (bKash / Nagad)</button>`
+                    : ''
+                }
+              </div>
+              ${
+                history.length === 0
+                  ? `<p class="text-slate-500">No subscription transactions recorded yet.</p>`
+                  : `<div class="overflow-x-auto">
+                      <table class="w-full text-left">
+                        <thead class="bg-slate-50 text-[10px] uppercase text-slate-600">
+                          <tr><th class="p-2.5">Month</th><th class="p-2.5">Method</th><th class="p-2.5">Sender</th><th class="p-2.5">TrxID</th><th class="p-2.5">Submitted</th></tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                          ${history.map((p) => `<tr><td class="p-2.5 font-bold">${esc(p.monthLabel || p.month)}</td><td class="p-2.5 uppercase font-bold text-pink-700">${esc(p.method)}</td><td class="p-2.5">${esc(p.senderPhone)}</td><td class="p-2.5 font-mono font-bold text-slate-900">${esc(p.trxId)}</td><td class="p-2.5 text-slate-500">${esc((p.paidAt || '').slice(0, 10))}</td></tr>`).join('')}
+                        </tbody>
+                      </table>
+                    </div>`
+              }
+            </div>
           </div>
         `;
       }
@@ -3501,6 +3692,158 @@
         );
       }
 
+      function renderSubscriptionPaymentBody(isHardLock = false) {
+        const billing = getBillingStatus();
+        const sel = state.billingSelectedMethod || 'bkash';
+        return `
+          <div class="space-y-4 text-xs">
+            <div class="p-4 rounded-2xl ${isHardLock ? 'bg-rose-50 border-rose-200 text-rose-900' : 'bg-sky-50 border-sky-200 text-slate-800'} border space-y-1">
+              <div class="font-extrabold text-sm">${isHardLock ? '১০ তারিখ অতিক্রম হয়েছে — পেমেন্ট করে সাইট আনলক করুন' : `${esc(billing.monthLabel)} মাসের পেমেন্ট (Send Money)`}</div>
+              <p class="leading-relaxed">নিচের <strong>bKash</strong> অথবা <strong>Nagad</strong> পার্সোনাল নাম্বার কপি করে <strong>Send Money</strong> করুন এবং সঠিক <strong>Transaction ID (TrxID)</strong> বসিয়ে সাবমিট করলেই সাথে সাথে সাইট ব্যবহার করতে পারবেন।</p>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <!-- bKash Card -->
+              <div data-pay-method="bkash" class="cursor-pointer rounded-2xl p-4 border-2 transition ${sel === 'bkash' ? 'border-pink-500 bg-pink-50/70 shadow-sm' : 'border-slate-200 bg-white hover:border-pink-300'}">
+                <div class="flex items-center justify-between">
+                  <span class="px-2 py-0.5 rounded-md bg-pink-600 text-white font-extrabold text-[10px]">bKash (Send Money)</span>
+                  <span class="text-[10px] font-bold ${sel === 'bkash' ? 'text-pink-700' : 'text-slate-400'}">${sel === 'bkash' ? '✓ Selected' : 'Select'}</span>
+                </div>
+                <div class="text-lg font-extrabold text-slate-900 tracking-wide mt-2 font-mono">${BILLING_CONFIG.bkash}</div>
+                <button type="button" data-copy-num="${BILLING_CONFIG.bkash}" data-copy-label="bKash" class="mt-2.5 w-full py-1.5 rounded-lg bg-white border border-pink-300 text-pink-700 font-bold hover:bg-pink-100">
+                  Copy bKash Number
+                </button>
+              </div>
+
+              <!-- Nagad Card -->
+              <div data-pay-method="nagad" class="cursor-pointer rounded-2xl p-4 border-2 transition ${sel === 'nagad' ? 'border-orange-500 bg-orange-50/70 shadow-sm' : 'border-slate-200 bg-white hover:border-orange-300'}">
+                <div class="flex items-center justify-between">
+                  <span class="px-2 py-0.5 rounded-md bg-orange-600 text-white font-extrabold text-[10px]">Nagad (Send Money)</span>
+                  <span class="text-[10px] font-bold ${sel === 'nagad' ? 'text-orange-700' : 'text-slate-400'}">${sel === 'nagad' ? '✓ Selected' : 'Select'}</span>
+                </div>
+                <div class="text-lg font-extrabold text-slate-900 tracking-wide mt-2 font-mono">${BILLING_CONFIG.nagad}</div>
+                <button type="button" data-copy-num="${BILLING_CONFIG.nagad}" data-copy-label="Nagad" class="mt-2.5 w-full py-1.5 rounded-lg bg-white border border-orange-300 text-orange-700 font-bold hover:bg-orange-100">
+                  Copy Nagad Number
+                </button>
+              </div>
+            </div>
+
+            <form id="sub-payment-form" class="space-y-3 pt-1">
+              <input type="hidden" id="sub-method-input" name="method" value="${esc(sel)}" />
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label class="block font-bold text-slate-700 mb-1">যে নাম্বার থেকে টাকা পাঠিয়েছেন *</label>
+                  <input name="senderPhone" required placeholder="017XXXXXXXX" maxlength="14" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white focus:border-sky-500 text-sm font-semibold" />
+                </div>
+                <div>
+                  <label class="block font-bold text-slate-700 mb-1">Transaction ID (TrxID) *</label>
+                  <input name="trxId" required placeholder="যেমন: BL72K9M4P1" maxlength="20" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white focus:border-sky-500 text-sm font-mono font-bold uppercase" />
+                </div>
+              </div>
+              <div id="sub-pay-err" class="hidden p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 font-semibold"></div>
+              <button type="submit" id="sub-pay-submit" class="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg">
+                সাবমিট ও সাইট আনলক করুন (Submit & Unlock)
+              </button>
+            </form>
+          </div>
+        `;
+      }
+
+      function wireSubscriptionPaymentContainer(container, onSuccess = null) {
+        container.querySelectorAll('[data-pay-method]').forEach((card) => {
+          card.onclick = (e) => {
+            if (e.target.closest('[data-copy-num]')) return;
+            state.billingSelectedMethod = card.dataset.payMethod;
+            const inp = container.querySelector('#sub-method-input');
+            if (inp) inp.value = state.billingSelectedMethod;
+            container.querySelectorAll('[data-pay-method]').forEach((c2) => {
+              const m = c2.dataset.payMethod;
+              const active = m === state.billingSelectedMethod;
+              c2.className = `cursor-pointer rounded-2xl p-4 border-2 transition ${
+                active
+                  ? m === 'bkash'
+                    ? 'border-pink-500 bg-pink-50/70 shadow-sm'
+                    : 'border-orange-500 bg-orange-50/70 shadow-sm'
+                  : 'border-slate-200 bg-white'
+              }`;
+            });
+          };
+        });
+        container.querySelectorAll('[data-copy-num]').forEach((btn) => {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            const num = btn.dataset.copyNum;
+            const lbl = btn.dataset.copyLabel;
+            navigator.clipboard?.writeText(num);
+            showToast(`${lbl} নাম্বার ${num} কপি করা হয়েছে!`, 'info');
+          };
+        });
+        const form = container.querySelector('#sub-payment-form');
+        if (form) {
+          form.onsubmit = async (e) => {
+            e.preventDefault();
+            const fd = new FormData(form);
+            const errBox = container.querySelector('#sub-pay-err');
+            const submitBtn = container.querySelector('#sub-pay-submit');
+            if (errBox) errBox.classList.add('hidden');
+            if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Verifying & Saving...'; }
+            try {
+              await submitSubscriptionPayment({
+                method: fd.get('method').toString(),
+                senderPhone: fd.get('senderPhone').toString(),
+                trxId: fd.get('trxId').toString(),
+              });
+              if (onSuccess) onSuccess();
+            } catch (err) {
+              if (errBox) {
+                errBox.textContent = err.message || 'Invalid transaction details';
+                errBox.classList.remove('hidden');
+              }
+              if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'সাবমিট ও সাইট আনলক করুন (Submit & Unlock)'; }
+            }
+          };
+        }
+      }
+
+      function openSubscriptionPaymentModal() {
+        const modal = openModal(
+          'Monthly Subscription Payment (bKash / Nagad)',
+          renderSubscriptionPaymentBody(false),
+          'max-w-xl'
+        );
+        wireSubscriptionPaymentContainer(modal, () => modal.remove());
+      }
+
+      function renderLockedPaywallView() {
+        const billing = getBillingStatus();
+        return `
+          <div class="min-h-screen bg-[#f8fbff] flex flex-col">
+            <div class="bg-slate-900 text-white px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-rose-400"></span>
+                <span class="font-bold">DMS Solution — Subscription Required</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <a href="https://wa.me/8801789637029" target="_blank" rel="noopener noreferrer" class="text-emerald-400 font-bold">WhatsApp Support: 01789637029</a>
+                <button type="button" id="btn-lock-signout" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold">Logout</button>
+              </div>
+            </div>
+            <div class="flex-1 flex items-center justify-center p-4 sm:p-8">
+              <div class="w-full max-w-xl bg-white border border-rose-200 rounded-3xl shadow-2xl p-6 sm:p-8 space-y-5 animate-fade-in">
+                <div class="flex items-center gap-3">
+                  <img src="${LOGO_URL}" referrerpolicy="no-referrer" class="w-12 h-12 rounded-xl object-contain bg-white p-1 border border-sky-200" />
+                  <div>
+                    <span class="px-2 py-0.5 rounded-md bg-rose-100 text-rose-700 text-[10px] font-extrabold uppercase">Access Locked (${esc(billing.monthLabel)})</span>
+                    <h1 class="text-xl font-extrabold text-slate-900 mt-0.5">মাসিক পেমেন্ট সম্পন্ন করুন</h1>
+                  </div>
+                </div>
+                <div id="lock-paywall-body">${renderSubscriptionPaymentBody(true)}</div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
       function openSupportModal() {
         openModal(
           'DMS Solution Support Desk',
@@ -3548,6 +3891,12 @@
         if (!state.user) {
           root.innerHTML = renderAuthView();
           bindAuthEvents();
+        } else if (getBillingStatus().isLocked) {
+          root.innerHTML = renderLockedPaywallView();
+          const lockOut = document.getElementById('btn-lock-signout');
+          if (lockOut) lockOut.onclick = signOutUser;
+          const lockBody = document.getElementById('lock-paywall-body');
+          if (lockBody) wireSubscriptionPaymentContainer(lockBody);
         } else if (!state.currentBusiness) {
           root.innerHTML = renderWizardView(true);
           bindWizardEvents(true);
@@ -3686,6 +4035,26 @@
         if (outBtn) outBtn.onclick = signOutUser;
         const supTop = document.getElementById('btn-open-support-top');
         if (supTop) supTop.onclick = openSupportModal;
+        const payBannerOpen = document.getElementById('btn-banner-open-pay');
+        if (payBannerOpen) payBannerOpen.onclick = openSubscriptionPaymentModal;
+        const payBannerNow = document.getElementById('btn-banner-pay-now');
+        if (payBannerNow) payBannerNow.onclick = openSubscriptionPaymentModal;
+        const payTopPill = document.getElementById('btn-top-pay-pill');
+        if (payTopPill) payTopPill.onclick = openSubscriptionPaymentModal;
+        const paySideBtn = document.getElementById('btn-sidebar-pay');
+        if (paySideBtn) paySideBtn.onclick = openSubscriptionPaymentModal;
+        const paySetBtn = document.getElementById('btn-settings-pay-now');
+        if (paySetBtn) paySetBtn.onclick = openSubscriptionPaymentModal;
+        const skipBanner = document.getElementById('btn-banner-skip');
+        if (skipBanner) {
+          skipBanner.onclick = () => {
+            const mk = getBillingStatus().monthKey;
+            state.billingNoticeDismissedMonth = mk;
+            sessionStorage.setItem('dms_billing_dismissed_month', mk);
+            showToast('নোটিশটি আপাতত এড়িয়ে যাওয়া হয়েছে (১০ তারিখ পর্যন্ত সুযোগ থাকবে)।', 'info');
+            render();
+          };
+        }
         const navSale = document.getElementById('btn-nav-new-sale');
         if (navSale) navSale.onclick = openSaleEntryModal;
         const dashSale = document.getElementById('btn-dash-sale-modal');
